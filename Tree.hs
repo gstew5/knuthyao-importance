@@ -1,14 +1,19 @@
 module Tree where
 
+import System.Random
+
 data Tree a =
     Leaf a
   | Node (Tree a) (Tree a)
     deriving (Show)
 
-sample :: [Bool] -> Tree a -> a
-sample _ (Leaf a) = a
-sample (False : bits) (Node t1 t2) = sample bits t1
-sample (True : bits)  (Node t1 t2) = sample bits t2
+
+type Sampler a = [Bool] -> (a, [Bool])
+
+sample :: Tree a -> Sampler a
+sample (Leaf a) bits = (a, bits)
+sample (Node t1 t2) (False : bits) = sample t1 bits
+sample (Node t1 t2) (True : bits) = sample t2 bits
 
 data Event = A | B | C deriving (Show, Eq)
 
@@ -67,22 +72,24 @@ cweight a (R t1 ctx) = 1/2*weight a t1 + 1/2*cweight a ctx
 example5 = cweight A (L Hole (Leaf B))
 example6 = cweight A (L Hole (Leaf A))
 
-type Delta a = Tree a -> Tree a
+type Delta a = Tree a -> (Tree a, Dir)
 
 reweight :: (Eq a, Floating r) => Delta a -> Zipper a -> a -> r
 reweight delt (ctx, t) x = (b - c)/(a*2**d + c) + 1 {-= (a + 2**(-d)*b)/(a + 2**(-d)*c)-}
   where a = cweight x ctx
         b = weight x t
-        c = weight x (delt t)
+        (new_t, _) = delt t
+        c = weight x new_t
         d = fromIntegral $ depth ctx
 
-type Program a = [(Delta a, Dir)]
+type Program a = [Delta a]
 
-run :: (Eq a, Floating r) => Program a -> Zipper a -> (a -> r) -> ([Bool] -> r)
-run [] z f = \bits -> f $ sample bits (fill z)
-run ((delt, dir) : rest) (ctx, t) f = run rest new_z new_f
+run :: (Eq a, Floating r) => Program a -> Zipper a -> (a -> r) -> Sampler r
+run [] z f = \bits -> let (a, rest) = sample (fill z) bits in (f a, rest)
+run (delt : rest) (ctx, t) f = run rest new_z new_f
   where new_f = \x -> reweight delt (ctx, t) x * f x
-        new_z = move dir (ctx, delt t)
+        (new_t, dir) = delt t
+        new_z = move dir (ctx, new_t)
         
 p = Node (Leaf B) (Node (Leaf A) (Leaf B))
 
@@ -90,17 +97,18 @@ rv A = 10.0
 rv B = 1.0
 
 --example8 = run [(\t -> t, DLeft), (\_ -> Leaf A, DUp), (\t -> t, DRight), (\t -> t, DRight), (\t -> Node (Leaf A) (Leaf B), DHere)] (Hole, p) rv
-example8 = run [(\t -> t, DLeft), (\_ -> Leaf A, DUp)] (Hole, p) rv
+example8 = run [(\t -> (t, DLeft)), (\_ -> (Leaf A, DUp))] (Hole, p) rv
 --example8 = run [] (Hole, p) rv
 
-s0 = example8 [False, False, True]
-s1 = example8 [False, True, True]
-s2 = example8 [True, False, True]
-s3 = example8 [True, True, True]
-s4 = example8 [False, False, False]
-s5 = example8 [False, True, False]
-s6 = example8 [True, False, False]
-s7 = example8 [True, True, False]
+
+s0 = fst $ example8 [False, False, True]
+s1 = fst $ example8 [False, True, True]
+s2 = fst $ example8 [True, False, True]
+s3 = fst $ example8 [True, True, True]
+s4 = fst $ example8 [False, False, False]
+s5 = fst $ example8 [False, True, False]
+s6 = fst $ example8 [True, False, False]
+s7 = fst $ example8 [True, True, False]
 
 samples = [s0, s1, s2, s3, s4, s5, s6, s7]
 
