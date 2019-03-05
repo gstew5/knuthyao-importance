@@ -3,9 +3,9 @@ module Tree where
 data Tree a =
     Leaf a
   | Node (Tree a) (Tree a)
-    deriving Show
+    deriving (Show)
 
-sample :: Fractional r => [Bool] -> Tree a -> a
+sample :: [Bool] -> Tree a -> a
 sample _ (Leaf a) = a
 sample (False : bits) (Node t1 t2) = sample bits t1
 sample (True : bits)  (Node t1 t2) = sample bits t2
@@ -22,7 +22,7 @@ data Context a =
     Hole
   | L (Context a) (Tree a)
   | R (Tree a) (Context a)
-    deriving Show    
+    deriving (Show)    
 
 data Dir = DownLeft | DownRight | Up | Here
 
@@ -67,35 +67,27 @@ cweight a (R t1 ctx) = 1/2*weight a t1 + 1/2*cweight a ctx
 example5 = cweight A (L Hole (Leaf B))
 example6 = cweight A (L Hole (Leaf A))
 
-data Delta a = SplitLeft (Tree a)
-
-apply :: Delta a -> Tree a -> Tree a
-apply (SplitLeft t1) t2 = Node t1 t2
+type Delta a = Tree a -> Tree a
 
 reweight :: (Eq a, Floating r) => Delta a -> Zipper a -> a -> r
-reweight (SplitLeft t1) (ctx, t2) x = 1 + (b - c)/(a*2**(d+1) + b + c) 
+reweight delt (ctx, t) x = (a + 2**(-d)*b)/(a + 2**(-d)*c)
   where a = cweight x ctx
-        b = weight x t2
-        c = weight x t1
+        b = weight x t
+        c = weight x (delt t)
         d = fromIntegral $ depth ctx
 
 type Program a = [(Delta a, Dir)]
 
-exec :: (Eq a, Floating r) => Program a -> Zipper a -> (Zipper a, a -> r)
-exec p z = go (\_ -> 1) p z
-  where go :: (Eq a, Floating r)
-           => (a -> r) -> Program a -> Zipper a -> (Zipper a, a -> r)
-        go f [] z = (z, f)
-        go f ((delt, dir) : rest) (ctx, t)
-          = let (z2, f2) = (move dir (ctx, apply delt t), \x -> reweight delt (ctx, t) x * f x)
-            in go f2 rest z2
-
-twothirds_onethirds2 :: Program Event
-twothirds_onethirds2 = go False
-  where go :: Bool -> Program Event
-        go False = (SplitLeft (Leaf A), DownLeft) : go True
-        go True  = (SplitLeft (Leaf B), DownLeft) : go False
-
-example7 = exec (take 1 twothirds_onethirds2) (Hole, Node (Leaf A) (Leaf B))        
+exec :: (Eq a, Floating r) => Program a -> Zipper a -> (a -> r) -> ([Bool] -> r)
+exec [] z f = \bits -> f $ sample bits (fill z)
+exec ((delt, dir) : rest) (ctx, t) f = exec rest new_z new_f
+  where new_f = \x -> reweight delt (ctx, t) x * f x
+        new_z = move dir (ctx, delt t)
         
+unif = Node (Leaf A) (Leaf B)
+
+rv A = 1.0
+rv B = 1.0
+
+example8 = exec [(\t -> Node t (Leaf B), Here)] (Hole, unif) rv [False, True]
 
