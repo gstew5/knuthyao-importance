@@ -10,10 +10,16 @@ data Tree a =
 
 type Sampler a = [Bool] -> (a, [Bool])
 
-sample :: Tree a -> Sampler a
-sample (Leaf a) bits = (a, bits)
-sample (Node t1 t2) (False : bits) = sample t1 bits
-sample (Node t1 t2) (True : bits) = sample t2 bits
+sample_many :: Sampler a -> [a] -> Int -> Sampler [a]
+sample_many sampler acc 0 = \bits -> (acc, bits)
+sample_many sampler acc n | n > 0 =
+  \bits -> let (a, rest) = sampler bits in sample_many sampler (a : acc) (n-1) rest
+
+sample_tree :: Tree a -> Sampler a
+sample_tree (Leaf a) bits = (a, bits)
+sample_tree (Node t1 t2) (False : bits) = sample_tree t1 bits
+sample_tree (Node t1 t2) (True : bits) = sample_tree t2 bits
+sample_tree (Node _ _) [] = error "not enough bits"
 
 data Event = A | B | C deriving (Show, Eq)
 
@@ -84,41 +90,38 @@ reweight delt (ctx, t) x = (b - c)/(a*2**d + c) + 1 {-= (a + 2**(-d)*b)/(a + 2**
 
 type Program a = [Delta a]
 
-run :: (Eq a, Floating r) => Program a -> Zipper a -> (a -> r) -> Sampler r
-run [] z f = \bits -> let (a, rest) = sample (fill z) bits in (f a, rest)
-run (delt : rest) (ctx, t) f = run rest new_z new_f
+eval :: (Eq a, Floating r) => Program a -> Zipper a -> (a -> r) -> Sampler r
+eval [] z f = \bits -> let (a, rest) = sample_tree (fill z) bits in (f a, rest)
+eval (delt : rest) (ctx, t) f = eval rest new_z new_f
   where new_f = \x -> reweight delt (ctx, t) x * f x
         (new_t, dir) = delt t
         new_z = move dir (ctx, new_t)
         
+run :: (Eq a, Floating r) => Program a -> Zipper a -> (a -> r) -> Int -> IO (r, r)
+run p z f n = do
+  let sampler = eval p z f
+  g <- newStdGen
+  let bits = randoms g :: [Bool]
+  let (samples, remaining_bits) = sample_many sampler [] n bits
+  let mqhat = foldl (+) 0.0 samples / (fromIntegral $ length samples)
+  let sqhat = foldl (\b a -> b + (a - mqhat)*(a - mqhat)) 0.0 samples
+              / (fromIntegral $ length samples)
+  let bound = (2.58*sqhat)/(sqrt 8)              
+  let confidence = (mqhat - bound, mqhat + bound)
+  return confidence
+
 p = Node (Leaf B) (Node (Leaf A) (Leaf B))
 
 rv A = 10.0
 rv B = 1.0
 
---example8 = run [(\t -> t, DLeft), (\_ -> Leaf A, DUp), (\t -> t, DRight), (\t -> t, DRight), (\t -> Node (Leaf A) (Leaf B), DHere)] (Hole, p) rv
-example8 = run [(\t -> (t, DLeft)), (\_ -> (Leaf A, DUp))] (Hole, p) rv
---example8 = run [] (Hole, p) rv
-
-
-s0 = fst $ example8 [False, False, True]
-s1 = fst $ example8 [False, True, True]
-s2 = fst $ example8 [True, False, True]
-s3 = fst $ example8 [True, True, True]
-s4 = fst $ example8 [False, False, False]
-s5 = fst $ example8 [False, True, False]
-s6 = fst $ example8 [True, False, False]
-s7 = fst $ example8 [True, True, False]
-
-samples = [s0, s1, s2, s3, s4, s5, s6, s7]
-
-mqhat = foldl (+) 0.0 samples / (fromIntegral $ length samples)
-
-sqhat = foldl (\b a -> b + (a - mqhat)*(a - mqhat)) 0.0 samples
-        / (fromIntegral $ length samples)
-
-confidence = (mqhat - bound, mqhat + bound)
-  where bound = (2.58*sqhat)/(sqrt 8)
+prog7 = [(\t -> (t, DLeft)), (\_ -> (Leaf A, DUp))]         
+-- This version of prog7 overweights A:
+--prog7 = [(\t -> t, DLeft), (\_ -> Leaf A, DUp), (\t -> t, DRight), (\t -> t, DRight),
+--         (\t -> Node (Leaf A) (Leaf B), DHere)]
+-- This version of prog7 underweights A:
+--prog7 = []
+example7 = run prog7 (Hole, p) rv 1000
 
         
 
