@@ -10,7 +10,7 @@ sample _ (Leaf a) = a
 sample (False : bits) (Node t1 t2) = sample bits t1
 sample (True : bits)  (Node t1 t2) = sample bits t2
 
-data Event = A | B deriving (Show, Eq)
+data Event = A | B | C deriving (Show, Eq)
 
 twothirds_onethird :: Tree Event
 twothirds_onethird = go False
@@ -24,19 +24,19 @@ data Context a =
   | R (Tree a) (Context a)
     deriving (Show)    
 
-data Dir = DownLeft | DownRight | Up | Here
+data Dir = DLeft | DRight | DUp | DHere
 
 type Zipper a = (Context a, Tree a)
 
 move :: Dir -> Zipper a -> Zipper a
-move DownLeft (ctx, Leaf a) = (ctx, Leaf a)
-move DownLeft (ctx, Node t1 t2) = (L ctx t2, t1)
-move DownRight (ctx, Leaf a) = (ctx, Leaf a)
-move DownRight (ctx, Node t1 t2) = (R t1 ctx, t2)
-move Up (L ctx t2, t1) = (ctx, Node t1 t2)
-move Up (R t1 ctx, t2) = (ctx, Node t1 t2)
-move Up (Hole, t) = (Hole, t)
-move Here z = z
+move DLeft (ctx, Leaf a) = (ctx, Leaf a)
+move DLeft (ctx, Node t1 t2) = (L ctx t2, t1)
+move DRight (ctx, Leaf a) = (ctx, Leaf a)
+move DRight (ctx, Node t1 t2) = (R t1 ctx, t2)
+move DUp (L ctx t2, t1) = (ctx, Node t1 t2)
+move DUp (R t1 ctx, t2) = (ctx, Node t1 t2)
+move DUp (Hole, t) = (Hole, t)
+move DHere z = z
 
 fill :: Zipper a -> Tree a
 fill (Hole, t) = t
@@ -70,7 +70,7 @@ example6 = cweight A (L Hole (Leaf A))
 type Delta a = Tree a -> Tree a
 
 reweight :: (Eq a, Floating r) => Delta a -> Zipper a -> a -> r
-reweight delt (ctx, t) x = (a + 2**(-d)*b)/(a + 2**(-d)*c)
+reweight delt (ctx, t) x = (b - c)/(a*2**d + c) + 1 {-= (a + 2**(-d)*b)/(a + 2**(-d)*c)-}
   where a = cweight x ctx
         b = weight x t
         c = weight x (delt t)
@@ -78,16 +78,39 @@ reweight delt (ctx, t) x = (a + 2**(-d)*b)/(a + 2**(-d)*c)
 
 type Program a = [(Delta a, Dir)]
 
-exec :: (Eq a, Floating r) => Program a -> Zipper a -> (a -> r) -> ([Bool] -> r)
-exec [] z f = \bits -> f $ sample bits (fill z)
-exec ((delt, dir) : rest) (ctx, t) f = exec rest new_z new_f
+run :: (Eq a, Floating r) => Program a -> Zipper a -> (a -> r) -> ([Bool] -> r)
+run [] z f = \bits -> f $ sample bits (fill z)
+run ((delt, dir) : rest) (ctx, t) f = run rest new_z new_f
   where new_f = \x -> reweight delt (ctx, t) x * f x
         new_z = move dir (ctx, delt t)
         
-unif = Node (Leaf A) (Leaf B)
+p = Node (Leaf B) (Node (Leaf A) (Leaf B))
 
-rv A = 1.0
+rv A = 10.0
 rv B = 1.0
 
-example8 = exec [(\t -> Node t (Leaf B), Here)] (Hole, unif) rv [False, True]
+--example8 = run [(\t -> t, DLeft), (\_ -> Leaf A, DUp), (\t -> t, DRight), (\t -> t, DRight), (\t -> Node (Leaf A) (Leaf B), DHere)] (Hole, p) rv
+example8 = run [(\t -> t, DLeft), (\_ -> Leaf A, DUp)] (Hole, p) rv
+--example8 = run [] (Hole, p) rv
+
+s0 = example8 [False, False, True]
+s1 = example8 [False, True, True]
+s2 = example8 [True, False, True]
+s3 = example8 [True, True, True]
+s4 = example8 [False, False, False]
+s5 = example8 [False, True, False]
+s6 = example8 [True, False, False]
+s7 = example8 [True, True, False]
+
+samples = [s0, s1, s2, s3, s4, s5, s6, s7]
+
+mqhat = foldl (+) 0.0 samples / (fromIntegral $ length samples)
+
+sqhat = foldl (\b a -> b + (a - mqhat)*(a - mqhat)) 0.0 samples
+        / (fromIntegral $ length samples)
+
+confidence = (mqhat - bound, mqhat + bound)
+  where bound = (2.58*sqhat)/(sqrt 8)
+
+        
 
