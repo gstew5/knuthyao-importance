@@ -1,6 +1,8 @@
+{-# LANGUAGE DeriveFunctor #-}
 module Tree where
 
 import System.Random
+import Control.Monad.State
 
 data Tree a =
     Leaf a
@@ -62,47 +64,63 @@ depth Hole = 0
 depth (L ctx t2) = 1 + depth ctx
 depth (R t1 ctx) = 1 + depth ctx
 
-example1 = fill (L Hole (Leaf B), Leaf A)
+weight :: (Eq a, Fractional r) => Tree a -> a -> r
+weight (Leaf b) a | a==b = 1
+weight (Leaf b) a | a/=b = 0
+weight (Node t1 t2) a    = 1/2*weight t1 a + 1/2*weight t2 a
 
-weight :: (Eq a, Fractional r) => a -> Tree a -> r
-weight a (Leaf b) | a==b = 1
-weight a (Leaf b) | a/=b = 0
-weight a (Node t1 t2)    = 1/2*weight a t1 + 1/2*weight a t2
+cweight :: (Eq a, Fractional r) => Context a -> a -> r
+cweight Hole _ = 0
+cweight (L ctx t2) a = 1/2*cweight ctx a + 1/2*weight t2 a
+cweight (R t1 ctx) a = 1/2*weight t1 a + 1/2*cweight ctx a
 
-example2 = weight A (Node (Leaf A) (Leaf B))
-example3 = weight A (Node (Leaf A) (Node (Leaf A) (Leaf B)))
-example4 = weight B (Node (Leaf A) (Node (Leaf A) (Leaf B)))
+data Prog a =
+    Stop
+  | Upd (Tree a -> Tree a) (Prog a) {-Update the focused tree-}
+  | Move Dir (Prog a)               {-Move the focus-}
 
-cweight :: (Eq a, Fractional r) => a -> Context a -> r
-cweight _ Hole = 0
-cweight a (L ctx t2) = 1/2*cweight a ctx + 1/2*weight a t2
-cweight a (R t1 ctx) = 1/2*weight a t1 + 1/2*cweight a ctx
+data EvalState a r = EvalState {
+  cur_zipper :: Zipper a,
+  cur_cweight :: a -> r,
+  cur_depth :: Int
+}
 
-example5 = cweight A (L Hole (Leaf B))
-example6 = cweight A (L Hole (Leaf A))
+get_zipper :: State (EvalState a r) (Zipper a)
+get_zipper = get >>= \s -> return $ cur_zipper s
 
-type Delta a = Tree a -> (Tree a, Dir)
+get_cweight :: State (EvalState a r) (a -> r)
+get_cweight = get >>= \s -> return $ cur_cweight s
 
-reweight :: (Eq a, Floating r) => Delta a -> Zipper a -> a -> r
-reweight delt (ctx, t) x = (b - c)/(a*2**d + c) + 1 {-= (a + 2**(-d)*b)/(a + 2**(-d)*c)-}
-  where a = cweight x ctx
-        b = weight x t
-        (new_t, _) = delt t
-        c = weight x new_t
-        d = fromIntegral $ depth ctx
+get_depth :: State (EvalState a r) Int
+get_depth = get >>= \s -> return $ cur_depth s
 
-type Program a = [Delta a]
-
-eval :: (Eq a, Floating r) => Program a -> Zipper a -> (a -> r) -> Sampler r
-eval [] z f = \bits -> let (a, rest) = sample_tree (fill z) bits in (f a, rest)
-eval (delt : rest) (ctx, t) f = eval rest new_z new_f
-  where new_f = \x -> reweight delt (ctx, t) x * f x
-        (new_t, dir) = delt t
-        new_z = move dir (ctx, new_t)
+eval :: (Show a, Eq a, Floating r) => Prog a -> (a -> r) -> State (EvalState a r) (Sampler r)
+eval Stop f = do
+  z <- get_zipper
+  return $ \bits ->
+    let (a, rest) = sample_tree (fill z) bits
+    in (f a, rest)
+eval (Upd delt p) f = do
+  z <- get_zipper
+  cw <- get_cweight
+  d <- get_depth
+  let (ctx, t) = z
+  let new_t = delt t
+  let new_f x = (1 + (b - c)/(a*2**fromIntegral d + c)) * f x
+        where a = cw x
+              b = weight t x
+              c = weight new_t x
+  eval p new_f
+eval (Move dir p) f = do
+  z <- get_zipper
+  let (new_ctx, new_t) = move dir z
+  modify (\_ -> EvalState (new_ctx, new_t) (cweight new_ctx) (depth new_ctx))
+  eval p f
         
-run :: (Eq a, Floating r) => Program a -> Zipper a -> (a -> r) -> Int -> IO (r, r)
+run :: (Show a, Eq a, Floating r) => Prog a -> Zipper a -> (a -> r) -> Int -> IO (r, r)
 run p z f n = do
-  let sampler = eval p z f
+  let (ctx, t) = z
+  let sampler = evalState (eval p f) (EvalState z (cweight ctx) (depth ctx))
   g <- newStdGen
   let bits = randoms g :: [Bool]
   let (samples, remaining_bits) = sample_many sampler (\bits -> ([], bits)) n bits
@@ -118,13 +136,12 @@ p = Node (Leaf B) (Node (Leaf A) (Leaf B))
 rv A = 10.0
 rv B = 1.0
 
-prog7 = [(\t -> (t, DLeft)), (\_ -> (Leaf A, DUp))]         
+--prog7 = Stop
+prog7 = Move DLeft (Upd (\_ -> Leaf A) Stop)
 -- This version of prog7 overweights A:
 --prog7 = [(\t -> t, DLeft), (\_ -> Leaf A, DUp), (\t -> t, DRight), (\t -> t, DRight),
 --         (\t -> Node (Leaf A) (Leaf B), DHere)]
 -- This version of prog7 underweights A:
 --prog7 = []
-example7 = run prog7 (Hole, p) rv 10000
-
-        
+example7 = run prog7 (Hole, p) rv 100
 
