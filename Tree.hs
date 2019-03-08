@@ -10,10 +10,13 @@ data Tree a =
 
 type Sampler a = [Bool] -> (a, [Bool])
 
-sample_many :: Sampler a -> [a] -> Int -> Sampler [a]
-sample_many sampler acc 0 = \bits -> (acc, bits)
+sample_many :: Sampler a -> Sampler [a] -> Int -> Sampler [a]
+sample_many sampler acc 0 = acc
 sample_many sampler acc n | n > 0 =
-  \bits -> let (a, rest) = sampler bits in sample_many sampler (a : acc) (n-1) rest
+  sample_many sampler
+    (\bits -> let (a, rest1) = sampler bits in
+              let (as, rest2) = acc rest1 in
+              (a : as, rest2)) (n-1)
 
 sample_tree :: Tree a -> Sampler a
 sample_tree (Leaf a) bits = (a, bits)
@@ -102,7 +105,7 @@ run p z f n = do
   let sampler = eval p z f
   g <- newStdGen
   let bits = randoms g :: [Bool]
-  let (samples, remaining_bits) = sample_many sampler [] n bits
+  let (samples, remaining_bits) = sample_many sampler (\bits -> ([], bits)) n bits
   let mqhat = foldl (+) 0.0 samples / (fromIntegral $ length samples)
   let sqhat = foldl (\b a -> b + (a - mqhat)*(a - mqhat)) 0.0 samples
               / (fromIntegral $ length samples)
@@ -121,7 +124,7 @@ prog7 = [(\t -> (t, DLeft)), (\_ -> (Leaf A, DUp))]
 --         (\t -> Node (Leaf A) (Leaf B), DHere)]
 -- This version of prog7 underweights A:
 --prog7 = []
-example7 = run prog7 (Hole, p) rv 1000
+example7 = run prog7 (Hole, p) rv 10000
 
         
 
