@@ -106,10 +106,9 @@ eval (Upd delt p) f = do
   d <- get_depth
   let (ctx, t) = z
   let new_t = delt t
-  let new_f x = (1 + (b - c)/(a*2**fromIntegral d + c)) * f x
-        where a = cw x
-              b = weight t x
-              c = weight new_t x
+  modify (\_ -> EvalState (ctx, new_t) cw d)
+  let new_f x = (1 + (weight t x - c)/((cw x)*2**fromIntegral d + c)) * f x
+        where c = weight new_t x
   eval p new_f
 eval (Move dir p) f = do
   z <- get_zipper
@@ -124,24 +123,19 @@ run p z f n = do
   g <- newStdGen
   let bits = randoms g :: [Bool]
   let (samples, remaining_bits) = sample_many sampler (\bits -> ([], bits)) n bits
-  let mqhat = foldl (+) 0.0 samples / (fromIntegral $ length samples)
-  let sqhat = foldl (\b a -> b + (a - mqhat)*(a - mqhat)) 0.0 samples
-              / (fromIntegral $ length samples)
-  let bound = (2.58*sqhat)/(sqrt 8)              
+  let mqhat = foldl (+) 0.0 samples / (fromIntegral $ n)
+  let sqhat = foldl (\b a -> b + (a - mqhat)*(a - mqhat)) 0.0 samples / fromIntegral n
+  let bound = (2.58*sqhat)/(sqrt $ fromIntegral n)
   let confidence = (mqhat - bound, mqhat + bound)
   return confidence
 
-p = Node (Leaf B) (Node (Leaf A) (Leaf B))
+p = Node (Leaf A) (Leaf B)
 
 rv A = 10.0
 rv B = 1.0
 
 --prog7 = Stop
-prog7 = Move DLeft (Upd (\_ -> Leaf A) Stop)
--- This version of prog7 overweights A:
---prog7 = [(\t -> t, DLeft), (\_ -> Leaf A, DUp), (\t -> t, DRight), (\t -> t, DRight),
---         (\t -> Node (Leaf A) (Leaf B), DHere)]
--- This version of prog7 underweights A:
---prog7 = []
-example7 = run prog7 (Hole, p) rv 100
+prog7 = Move DRight (Upd (\_ -> Node (Leaf A) (Node (Leaf A) (Leaf B))) Stop)
+--prog7 = Move DRight (Upd (\_ -> Leaf B) Stop)
+example7 = run prog7 (Hole, p) rv 30
 
