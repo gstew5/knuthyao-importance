@@ -2,7 +2,7 @@
 module Tree2 where
 
 import Data.List (union, intersectBy, sort)
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, mapMaybe)
 import System.Random
 
 data Tree r a =
@@ -137,7 +137,7 @@ instance Ord Val where
 
 data Atom = AVar Name | AVal Val deriving (Show, Eq)
 data Constraint = CEq Atom Atom | CLt Atom Atom deriving (Show, Eq)
-type Pred = [Constraint]
+type Pred = [[Constraint]] -- DNF
 
 instance Ord Atom where
   compare (AVar x) (AVar y) = compare x y
@@ -164,8 +164,8 @@ asubst :: Name -> Val -> Atom -> Atom
 asubst x v (AVar y) = if x==y then AVal v else AVar y
 asubst x v (AVal vy) = AVal vy
 
-solve :: Pred -> Maybe [(Name, Val)]
-solve cs = go [] (sort cs)
+solve :: Pred -> [[(Name, Val)]]
+solve cs = mapMaybe (go []) (map sort cs)
   where go :: [(Name, Val)] -> [Constraint] -> Maybe [(Name, Val)]
         go binds [] = Just binds
 
@@ -185,13 +185,15 @@ solve cs = go [] (sort cs)
 
 reduce :: Tree r Pred -> Tree r Pred
 reduce = bind (\p -> case solve p of
-                Nothing -> Never
-                Just _ -> Leaf p)
+                [] -> Never
+                (_ : _) -> Leaf p)
 
 mget :: Name -> Pred -> Maybe Val
 mget x p = do
-  m <- solve p
-  lookup x m
+  case solve p of
+    [] -> Nothing
+    (m : []) -> lookup x m
+    _ : _ -> Nothing
 
 get :: Name -> Pred -> Val
 get x p =
@@ -210,11 +212,15 @@ data Com =
 interp :: Num r => Com -> Tree r Pred
 interp (Flip c1 c2) = Split (interp c1) (interp c2)
 interp (Observe p) = Leaf p
-interp (Assign x a) = Leaf [CEq (AVar x) a]
+interp (Assign x a) = Leaf [[CEq (AVar x) a]]
 interp (Seq c1 c2) = do
-  p1 <- interp c1
-  p2 <- interp c2
-  Leaf (union p1 p2)
+  ds1 <- interp c1
+  ds2 <- interp c2
+  Leaf [union d1 d2 | d1 <- ds1, d2 <- ds2]
+--interp (Ite a c1 c2) = do
+--  p1 <- interp c1
+--  p2 <- interp c2
+--  Leaf [CImpl a 
   
 importance :: Fractional r => Tree r a -> Tree r a
 importance (Leaf a) = Leaf a
@@ -251,14 +257,14 @@ com1 =
    (Flip
     (Assign "x" (AVal (VFloat 4)))
     (Assign "x" (AVal (VFloat 5)))))
-  (Observe [CLt (AVal (VFloat 3)) (AVar "x")])
+  (Observe [[CLt (AVal (VFloat 3)) (AVar "x")]])
 
 com2 :: Com
 com2 =
   Seq (
     (Assign "x" (AVal (VFloat 4)))
     )
-  (Observe [CLt (AVal (VFloat 3)) (AVar "x")])
+  (Observe [[CLt (AVal (VFloat 3)) (AVar "x")]])
 
 ex1 = run (\st -> get "x" st) com1 
   
