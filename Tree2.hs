@@ -1,5 +1,7 @@
+{-# LANGUAGE TypeSynonymInstances, FlexibleInstances #-}
 module Tree2 where
 
+import Data.List (union, intersectBy, sort)
 import Data.Maybe (catMaybes)
 import System.Random
 
@@ -24,12 +26,25 @@ instance Functor (Tree r) where
   fmap g (Corec f) = fmap g (f (Corec f))
   fmap g Never = Never
 
+instance Num r => Applicative (Tree r) where
+  pure a = Leaf a
+  Leaf f <*> Leaf a = Leaf (f a)
+  Scale r1 f <*> Scale r2 t = Scale (r1*r2) (f <*> t)
+  Split f1 f2 <*> Split t1 t2 = Split (f1 <*> t1) (f2 <*> t2)
+  Corec f <*> Corec t = f (Corec f) <*> t (Corec t)
+  Never <*> Never = Never
+  _ <*> _ = Never
+
 bind :: (a -> Tree r b) -> Tree r a -> Tree r b
 bind g (Leaf a) = g a
 bind g (Scale r t) = Scale r (bind g t)
 bind g (Split t1 t2) = Split (bind g t1) (bind g t2)
 bind g (Corec f) = bind g (f (Corec f))
 bind g Never = Never
+
+instance Num r => Monad (Tree r) where
+  (>>=) t g = bind g t
+  return a = pure a
 
 type Bits = [Bool]
 
@@ -58,7 +73,7 @@ type Name = String
 data Val =
     VFloat Float
   | VBool Bool
-    deriving (Show)
+    deriving (Show, Eq)
 
 instance Num Val where
   (+) (VFloat r1) (VFloat r2) = VFloat (r1 + r2)
@@ -113,67 +128,112 @@ instance Floating Val where
   atanh (VFloat r) = VFloat (atanh r)
   atanh _ = error "ill-typed atanh"
 
-type St = [(Name, Val)]
+instance Ord Val where
+  compare (VFloat r1) (VFloat r2) = compare r1 r2
+  compare (VBool False) (VBool True) = LT
+  compare (VBool True) (VBool False) = GT
+  compare (VBool _) (VBool _) = EQ
+  compare (VBool _) (VFloat _) = LT
 
-empty :: St
-empty = []
+data Atom = AVar Name | AVal Val deriving (Show, Eq)
+data Constraint = CEq Atom Atom | CLt Atom Atom deriving (Show, Eq)
+type Pred = [Constraint]
 
-upd :: Name -> Val -> St -> St
-upd x v st = (x,v) : st
+instance Ord Atom where
+  compare (AVar x) (AVar y) = compare x y
+  compare (AVal _) (AVar _) = LT
+  compare (AVar _) (AVal _) = GT
+  compare (AVal v1) (AVal v2) = compare v1 v2
 
-get :: Name -> St -> Val
-get x [] = error "name not bound"
-get x ((y, v) : rest) = if x==y then v else get x rest
+instance Ord Constraint where
+  compare (CEq _ _) (CLt _ _) = LT
+  compare (CEq a1 a2) (CEq b1 b2) =
+    case compare a1 b1 of
+      EQ -> compare a2 b2
+      _ -> compare a1 b1
+  compare (CLt a1 a2) (CLt b1 b2) =
+    case compare a1 b1 of
+      EQ -> compare a2 b2
+      _ -> compare a1 b1
 
-data Exp = 
-    EVal Val
-  | EVar Name  
-  | ELt Exp Exp
+subst :: Name -> Val -> Constraint -> Constraint
+subst x v (CEq a1 a2) = CEq (asubst x v a1) (asubst x v a2)
+subst x v (CLt a1 a2) = CLt (asubst x v a1) (asubst x v a2)
 
-einterp :: Exp -> St -> Val
-einterp (EVal v) _ = v
-einterp (EVar x) st = get x st
-einterp (ELt e1 e2) st =
-  case (einterp e1 st, einterp e2 st) of
-    (VFloat r1, VFloat r2) -> VBool (r1 < r2)
-    (_, _) -> error "ill-typed expression"
+asubst :: Name -> Val -> Atom -> Atom
+asubst x v (AVar y) = if x==y then AVal v else AVar y
+asubst x v (AVal vy) = AVal vy
 
-is_true :: Exp -> St -> Bool
-is_true e st =
-  case einterp e st of
-    VBool b -> b
-    _ -> error "not a Boolean"
+solve :: Pred -> Maybe [(Name, Val)]
+solve cs = go [] (sort cs)
+  where go :: [(Name, Val)] -> [Constraint] -> Maybe [(Name, Val)]
+        go binds [] = Just binds
 
+        -- Ground constraints:
+        go binds (CEq (AVal vx) (AVal vy) : rest) = if vx==vy then go binds rest else Nothing
+        go binds (CLt (AVal vx) (AVal vy) : rest) = if vx<vy then go binds rest else Nothing
+
+        -- Equality constraints:
+        go binds (CEq (AVar x) (AVal v) : rest) = go ((x, v) : binds) (map (subst x v) rest)
+
+        -- These constraints should not occur in well-typed programs
+        -- (because variables will have been substituted by prior sorted constraints):
+        go binds (CEq (AVal _) (AVar _) : _) = Nothing                
+        go binds (CEq (AVar _) (AVar _) : _) = Nothing        
+        go binds (CLt (AVal _) (AVar _) : _) = Nothing
+        go binds (CLt (AVar _) (AVal _) : _) = Nothing
+
+reduce :: Tree r Pred -> Tree r Pred
+reduce = bind (\p -> case solve p of
+                Nothing -> Never
+                Just _ -> Leaf p)
+
+mget :: Name -> Pred -> Maybe Val
+mget x p = do
+  m <- solve p
+  lookup x m
+
+get :: Name -> Pred -> Val
+get x p =
+  case mget x p of
+    Nothing -> error $ "name " ++ x ++ " not bound"
+    Just v -> v
+  
 data Com =
     Flip Com Com
-  | Observe Exp
-  | Assign Name Exp
+  | Observe Pred
+  | Assign Name Atom
   | Seq Com Com  
-  | Ite Exp Com Com
+--  | Ite Atom Com Com
+--  | While Exp Com
 
-interp :: Com -> Tree r St -> Tree r St
-interp (Flip c1 c2) t = Split (interp c1 t) (interp c2 t)
-interp (Observe e) t = bind (\st -> if is_true e st then Leaf st else Never) t
-interp (Assign x e) t = bind (\st -> Leaf $ upd x (einterp e st) st) t
-interp (Seq c1 c2) t = interp c2 (interp c1 t)
-interp (Ite e c1 c2) t = bind (\st -> if is_true e st then interp c1 (Leaf st) else interp c2 (Leaf st)) t
-
-importance :: Fractional r => Tree r St -> Tree r St
+interp :: Num r => Com -> Tree r Pred
+interp (Flip c1 c2) = Split (interp c1) (interp c2)
+interp (Observe p) = Leaf p
+interp (Assign x a) = Leaf [CEq (AVar x) a]
+interp (Seq c1 c2) = do
+  p1 <- interp c1
+  p2 <- interp c2
+  Leaf (union p1 p2)
+  
+importance :: Fractional r => Tree r a -> Tree r a
 importance (Leaf a) = Leaf a
 importance (Scale r t) = Scale r $ importance t
+importance (Split Never Never) = Never
 importance (Split Never t2) = Scale (1/2) $ importance t2
 importance (Split t1 Never) = Scale (1/2) $ importance t1
 importance (Split t1 t2) = Split (importance t1) (importance t2)
 importance (Corec f) = importance (f (Corec f))
+importance Never = Never
 
-infer :: Fractional r => Obs St r -> Com -> Tree r St -> Sampler (Maybe r)
-infer f c t bits = sample f (importance $ interp c t) bits
+infer :: Fractional r => Obs Pred r -> Com -> Sampler (Maybe r)
+infer f c bits = sample f (importance $ reduce $ interp c) bits
 
-run :: Floating r => Obs St r -> Com -> Int -> IO (r, (r, r))
+run :: Floating r => Obs Pred r -> Com -> Int -> IO (r, r, (r, r))
 run f c n = do
   g <- newStdGen
   let bits = randoms g :: [Bool]
-  let sampler = infer f c (Leaf empty)
+  let sampler = infer f c
   let (msamples, remaining_bits) = sample_many sampler (\bits -> ([], bits)) n bits
   let samples = catMaybes msamples
   let m = fromIntegral $ length samples
@@ -181,17 +241,24 @@ run f c n = do
   let sqhat = foldl (\b a -> b + (a - mqhat)*(a - mqhat)) 0.0 samples / m
   let bound = (2.58*sqhat)/(sqrt m)
   let confidence = (mqhat - bound, mqhat + bound)
-  return (bound, confidence)
+  return (m, bound, confidence)
 
 com1 :: Com
 com1 =
   Seq
   (Flip
-   (Assign "x" (EVal (VFloat 3)))
+   (Assign "x" (AVal (VFloat 3)))
    (Flip
-    (Assign "x" (EVal (VFloat 4)))
-    (Assign "x" (EVal (VFloat 5)))))
-  (Observe (ELt (EVal (VFloat 3)) (EVar "x")))
+    (Assign "x" (AVal (VFloat 4)))
+    (Assign "x" (AVal (VFloat 5)))))
+  (Observe [CLt (AVal (VFloat 3)) (AVar "x")])
+
+com2 :: Com
+com2 =
+  Seq (
+    (Assign "x" (AVal (VFloat 4)))
+    )
+  (Observe [CLt (AVal (VFloat 3)) (AVar "x")])
 
 ex1 = run (\st -> get "x" st) com1 
   
