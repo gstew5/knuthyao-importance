@@ -136,8 +136,15 @@ instance Ord Val where
   compare (VBool _) (VFloat _) = LT
 
 data Atom = AVar Name | AVal Val deriving (Show, Eq)
-data Constraint = CEq Atom Atom | CLt Atom Atom deriving (Show, Eq)
+data Binop = Eq | Neq | Lt | Geq deriving (Show, Eq, Ord)
+data Constraint = CBin Binop Atom Atom deriving (Show, Eq)
 type Pred = [[Constraint]] -- DNF
+
+cneg :: Constraint -> Constraint
+cneg (CBin Eq a1 a2) = CBin Neq a1 a2
+cneg (CBin Neq a1 a2) = CBin Eq a1 a2
+cneg (CBin Lt a1 a2) = CBin Geq a1 a2
+cneg (CBin Geq a1 a2) = CBin Lt a1 a2
 
 instance Ord Atom where
   compare (AVar x) (AVar y) = compare x y
@@ -146,81 +153,109 @@ instance Ord Atom where
   compare (AVal v1) (AVal v2) = compare v1 v2
 
 instance Ord Constraint where
-  compare (CEq _ _) (CLt _ _) = LT
-  compare (CEq a1 a2) (CEq b1 b2) =
-    case compare a1 b1 of
-      EQ -> compare a2 b2
-      _ -> compare a1 b1
-  compare (CLt a1 a2) (CLt b1 b2) =
-    case compare a1 b1 of
-      EQ -> compare a2 b2
-      _ -> compare a1 b1
+  compare (CBin o1 a1 a2) (CBin o2 b1 b2) =
+    case compare o1 o2 of
+      EQ -> case compare a1 b1 of
+              EQ -> compare a2 b2
+              l@_ -> l
+      l@_ -> l
 
 subst :: Name -> Val -> Constraint -> Constraint
-subst x v (CEq a1 a2) = CEq (asubst x v a1) (asubst x v a2)
-subst x v (CLt a1 a2) = CLt (asubst x v a1) (asubst x v a2)
+subst x v (CBin op a1 a2) = CBin op (asubst x v a1) (asubst x v a2)
 
 asubst :: Name -> Val -> Atom -> Atom
 asubst x v (AVar y) = if x==y then AVal v else AVar y
 asubst x v (AVal vy) = AVal vy
 
-solve :: Pred -> [[(Name, Val)]]
-solve cs = mapMaybe (go []) (map sort cs)
-  where go :: [(Name, Val)] -> [Constraint] -> Maybe [(Name, Val)]
+data Polarity = Pos | Neg deriving (Show, Eq, Ord)
+
+type Clause = [(Name, (Val, Polarity))]
+
+negates :: (Name, (Val, Polarity)) -> (Name, (Val, Polarity)) -> Bool
+negates (x1, (v1, p1)) (x2, (v2, p2)) = x1==x2 && v1==v2 && p1/=p2
+
+negated_in :: Clause -> (Name, (Val, Polarity)) -> Bool
+negated_in as a2 = any (negates a2) as
+
+solve_disjuncts :: Pred -> [Clause]
+solve_disjuncts ds = mapMaybe (go []) (map sort ds)
+  where go :: Clause -> [Constraint] -> Maybe Clause
         go binds [] = Just binds
 
         -- Ground constraints:
-        go binds (CEq (AVal vx) (AVal vy) : rest) = if vx==vy then go binds rest else Nothing
-        go binds (CLt (AVal vx) (AVal vy) : rest) = if vx<vy then go binds rest else Nothing
+        go binds (CBin Eq (AVal vx) (AVal vy) : rest) = if vx==vy then go binds rest else Nothing
+        go binds (CBin Neq (AVal vx) (AVal vy) : rest) = if vx/=vy then go binds rest else Nothing        
+        go binds (CBin Lt (AVal vx) (AVal vy) : rest) = if vx<vy then go binds rest else Nothing
 
-        -- Equality constraints:
-        go binds (CEq (AVar x) (AVal v) : rest) = go ((x, v) : binds) (map (subst x v) rest)
+        -- (In-)Equality constraints:
+        go binds (CBin Eq (AVar x) (AVal v) : rest) =
+          let bind = (x, (v, Pos)) in 
+          if negated_in binds bind then Nothing
+          else go (bind : binds) (map (subst x v) rest)
+        go binds (CBin Eq (AVal v) (AVar x) : rest) = go binds (CBin Eq (AVar x) (AVal v) : rest)
+        go binds (CBin Neq (AVar x) (AVal v) : rest) =
+          let bind = (x, (v, Neg)) in 
+          if negated_in binds bind then Nothing
+          else go (bind : binds) rest
+        go binds (CBin Neq (AVal v) (AVar x) : rest) = go binds (CBin Neq (AVar x) (AVal v) : rest)
 
-        -- These constraints should not occur in well-typed programs
-        -- (because variables will have been substituted by prior sorted constraints):
-        go binds (CEq (AVal _) (AVar _) : _) = Nothing                
-        go binds (CEq (AVar _) (AVar _) : _) = Nothing        
-        go binds (CLt (AVal _) (AVar _) : _) = Nothing
-        go binds (CLt (AVar _) (AVal _) : _) = Nothing
+        -- The remaining constraints aren't yet supported:
+        go binds (c : _) = error $ "constraint " ++ show c ++ " not yet supported"
+
+simplify :: [Clause] -> [Clause]
+simplify [] = []
+simplify (c : cs) =
+  case hd of
+    [] -> [[]]
+    _ : _ -> hd : simplify tl
+  where hd = filter (not . negated_in_any cs) c
+        tl = map (filter (not . negated_in c)) cs
+        negated_in_any cs a = any (\as -> negated_in as a) cs
+
+solve :: Pred -> [Clause]
+solve cs = simplify $ solve_disjuncts cs
 
 reduce :: Tree r Pred -> Tree r Pred
 reduce = bind (\p -> case solve p of
                 [] -> Never
-                (_ : _) -> Leaf p)
+                (_ : _) -> Leaf p) -- At least one disjunct is satisfiable
 
-mget :: Name -> Pred -> Maybe Val
+mget :: Name -> Pred -> Maybe (Val, Polarity)
 mget x p = do
   case solve p of
     [] -> Nothing
     (m : []) -> lookup x m
     _ : _ -> Nothing
 
-get :: Name -> Pred -> Val
+get :: Name -> Pred -> (Val, Polarity)
 get x p =
   case mget x p of
     Nothing -> error $ "name " ++ x ++ " not bound"
-    Just v -> v
+    Just vp -> vp
   
 data Com =
     Flip Com Com
+  | Nondet Com Com     
   | Observe Pred
   | Assign Name Atom
-  | Seq Com Com  
---  | Ite Atom Com Com
---  | While Exp Com
+  | Seq Com Com
+
+-- Derived commands:
+ite :: Constraint -> Com -> Com -> Com
+ite phi c1 c2 = Nondet (Seq (Observe [[phi]]) c1) (Seq (Observe [[cneg phi]]) c2)
 
 interp :: Num r => Com -> Tree r Pred
 interp (Flip c1 c2) = Split (interp c1) (interp c2)
+interp (Nondet c1 c2) = do
+  ds1 <- interp c1
+  ds2 <- interp c2
+  Leaf (union ds1 ds2)
 interp (Observe p) = Leaf p
-interp (Assign x a) = Leaf [[CEq (AVar x) a]]
+interp (Assign x a) = Leaf [[CBin Eq (AVar x) a]]
 interp (Seq c1 c2) = do
   ds1 <- interp c1
   ds2 <- interp c2
   Leaf [union d1 d2 | d1 <- ds1, d2 <- ds2]
---interp (Ite a c1 c2) = do
---  p1 <- interp c1
---  p2 <- interp c2
---  Leaf [CImpl a 
   
 importance :: Fractional r => Tree r a -> Tree r a
 importance (Leaf a) = Leaf a
@@ -257,14 +292,13 @@ com1 =
    (Flip
     (Assign "x" (AVal (VFloat 4)))
     (Assign "x" (AVal (VFloat 5)))))
-  (Observe [[CLt (AVal (VFloat 3)) (AVar "x")]])
+  (Observe [[CBin Lt (AVal (VFloat 3)) (AVar "x")]])
+
+ex1 = run (\st -> fst $ get "x" st) com1 
 
 com2 :: Com
 com2 =
-  Seq (
-    (Assign "x" (AVal (VFloat 4)))
-    )
-  (Observe [[CLt (AVal (VFloat 3)) (AVar "x")]])
-
-ex1 = run (\st -> get "x" st) com1 
+  ite (CBin Eq (AVar "x") (AVal (VFloat 3)))
+    (Observe [[CBin Lt (AVal (VFloat 2)) (AVar "x")]])
+    (Observe [[CBin Eq (AVar "x") (AVal (VFloat 3))]]) 
   
