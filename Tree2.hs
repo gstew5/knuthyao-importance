@@ -12,6 +12,10 @@ data Tree r a =
   | Corec (Tree r a -> Tree r a)
   | Never
 
+is_never :: Tree r a -> Bool
+is_never Never = True
+is_never _ = False
+
 instance (Show r, Show a) => Show (Tree r a) where
   show (Leaf a) = show a
   show (Scale r t) = show r ++ "*(" ++ show t ++ ")"
@@ -218,14 +222,13 @@ solve cs = simplify $ solve_disjuncts cs
 reduce :: Tree r Pred -> Tree r Pred
 reduce = bind (\p -> case solve p of
                 [] -> Never
-                (_ : _) -> Leaf p) -- At least one disjunct is satisfiable
+                (_ : _) -> Leaf p) -- At least one disjunct is satisfiable.
 
 mget :: Name -> Pred -> Maybe (Val, Polarity)
 mget x p = do
   case solve p of
     [] -> Nothing
-    (m : []) -> lookup x m
-    _ : _ -> Nothing
+    (m : _) -> lookup x m -- FIXME: There may be multiple solutions.
 
 get :: Name -> Pred -> (Val, Polarity)
 get x p =
@@ -259,18 +262,20 @@ interp (Seq c1 c2) = do
   
 importance :: Fractional r => Tree r a -> Tree r a
 importance (Leaf a) = Leaf a
-importance (Scale r t) = Scale r $ importance t
-importance (Split Never Never) = Never
-importance (Split Never t2) = Scale (1/2) $ importance t2
-importance (Split t1 Never) = Scale (1/2) $ importance t1
-importance (Split t1 t2) = Split (importance t1) (importance t2)
-importance (Corec f) = importance (f (Corec f))
+importance (Scale r t) | is_never (importance t) = Never
+importance (Scale r t) | otherwise = Scale r $ importance t
+importance (Split t1 t2) | is_never (importance t1) && is_never (importance t2) = Never
+importance (Split t1 t2) | is_never (importance t1) = Scale (1/2) $ importance t2
+importance (Split t1 t2) | is_never (importance t2) = Scale (1/2) $ importance t1
+importance (Split t1 t2) | otherwise = Split (importance t1) (importance t2)
+importance (Corec f) | is_never (importance (f (Corec f))) = Never
+importance (Corec f) | otherwise = importance (f (Corec f))
 importance Never = Never
 
 infer :: Fractional r => Obs Pred r -> Com -> Sampler (Maybe r)
 infer f c bits = sample f (importance $ reduce $ interp c) bits
 
-run :: Floating r => Obs Pred r -> Com -> Int -> IO (r, r, (r, r))
+run :: Floating r => Obs Pred r -> Com -> Int -> IO ([r], r, r, r, (r, r))
 run f c n = do
   g <- newStdGen
   let bits = randoms g :: [Bool]
@@ -282,7 +287,7 @@ run f c n = do
   let sqhat = foldl (\b a -> b + (a - mqhat)*(a - mqhat)) 0.0 samples / m
   let bound = (2.58*sqhat)/(sqrt m)
   let confidence = (mqhat - bound, mqhat + bound)
-  return (m, bound, confidence)
+  return (samples, mqhat, m, bound, confidence)
 
 com1 :: Com
 com1 =
@@ -294,7 +299,7 @@ com1 =
     (Assign "x" (AVal (VFloat 5)))))
   (Observe [[CBin Lt (AVal (VFloat 3)) (AVar "x")]])
 
-ex1 = run (\st -> fst $ get "x" st) com1 
+ex1 = run (fst . get "x") com1 
 
 com2 :: Com
 com2 =
@@ -302,3 +307,10 @@ com2 =
     (Observe [[CBin Lt (AVal (VFloat 2)) (AVar "x")]])
     (Observe [[CBin Eq (AVar "x") (AVal (VFloat 3))]]) 
   
+com3 :: Com
+com3 =
+  let cx = Flip (Assign "x" (AVal (VFloat 0))) (Assign "x" (AVal (VFloat 1))) in
+  let cy = Flip (Assign "y" (AVal (VFloat 0))) (Assign "y" (AVal (VFloat 1))) in
+  Seq cx (Seq cy (Observe [[CBin Lt (AVar "x") (AVal (VFloat 1.1))]]))   
+
+ex3 = run (fst . get "x") (Flip (Assign "x" (AVal (VFloat 0))) (Assign "x" (AVal (VFloat 1))))
