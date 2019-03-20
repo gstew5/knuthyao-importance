@@ -260,20 +260,20 @@ interp (Seq c1 c2) = do
   ds2 <- interp c2
   Leaf [union d1 d2 | d1 <- ds1, d2 <- ds2]
   
-importance :: Fractional r => Tree r a -> Tree r a
-importance (Leaf a) = Leaf a
-importance (Scale r t) | is_never (importance t) = Never
-importance (Scale r t) | otherwise = Scale r $ importance t
-importance (Split t1 t2) | is_never (importance t1) && is_never (importance t2) = Never
-importance (Split t1 t2) | is_never (importance t1) = Scale (1/2) $ importance t2
-importance (Split t1 t2) | is_never (importance t2) = Scale (1/2) $ importance t1
-importance (Split t1 t2) | otherwise = Split (importance t1) (importance t2)
-importance (Corec f) | is_never (importance (f (Corec f))) = Never
-importance (Corec f) | otherwise = importance (f (Corec f))
-importance Never = Never
+opt :: Fractional r => Tree r a -> Tree r a
+opt (Leaf a) = Leaf a
+opt (Scale r t) | is_never (opt t) = Never
+opt (Scale r t) | otherwise = Scale r $ opt t
+opt (Split t1 t2) | is_never (opt t1) && is_never (opt t2) = Never
+opt (Split t1 t2) | is_never (opt t1) = opt t2
+opt (Split t1 t2) | is_never (opt t2) = opt t1
+opt (Split t1 t2) | otherwise = Split (opt t1) (opt t2)
+opt (Corec f) | is_never (opt (f (Corec f))) = Never
+opt (Corec f) | otherwise = opt (f (Corec f))
+opt Never = Never
 
 infer :: Fractional r => Obs Pred r -> Com -> Sampler (Maybe r)
-infer f c bits = sample f (importance $ reduce $ interp c) bits
+infer f c bits = sample f (opt $ reduce $ interp c) bits
 
 run :: Floating r => Obs Pred r -> Com -> Int -> IO ([r], r, r, r, (r, r))
 run f c n = do
