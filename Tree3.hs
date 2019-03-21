@@ -138,128 +138,52 @@ instance Ord Val where
   compare (VBool True) (VBool False) = GT
   compare (VBool _) (VBool _) = EQ
   compare (VBool _) (VFloat _) = LT
-
-data Atom = AVar Name | AVal Val deriving (Show, Eq)
-data Binop = Eq | Neq | Lt | Geq deriving (Show, Eq, Ord)
-data Constraint = CBin Binop Atom Atom deriving (Show, Eq)
-type Pred = [[Constraint]] -- DNF
-
-cneg :: Constraint -> Constraint
-cneg (CBin Eq a1 a2) = CBin Neq a1 a2
-cneg (CBin Neq a1 a2) = CBin Eq a1 a2
-cneg (CBin Lt a1 a2) = CBin Geq a1 a2
-cneg (CBin Geq a1 a2) = CBin Lt a1 a2
-
-instance Ord Atom where
-  compare (AVar x) (AVar y) = compare x y
-  compare (AVal _) (AVar _) = LT
-  compare (AVar _) (AVal _) = GT
-  compare (AVal v1) (AVal v2) = compare v1 v2
-
-instance Ord Constraint where
-  compare (CBin o1 a1 a2) (CBin o2 b1 b2) =
-    case compare o1 o2 of
-      EQ -> case compare a1 b1 of
-              EQ -> compare a2 b2
-              l@_ -> l
-      l@_ -> l
-
-subst :: Name -> Val -> Constraint -> Constraint
-subst x v (CBin op a1 a2) = CBin op (asubst x v a1) (asubst x v a2)
-
-asubst :: Name -> Val -> Atom -> Atom
-asubst x v (AVar y) = if x==y then AVal v else AVar y
-asubst x v (AVal vy) = AVal vy
-
-data Polarity = Pos | Neg deriving (Show, Eq, Ord)
-
-type Clause = [(Name, (Val, Polarity))]
-
-negates :: (Name, (Val, Polarity)) -> (Name, (Val, Polarity)) -> Bool
-negates (x1, (v1, p1)) (x2, (v2, p2)) = x1==x2 && v1==v2 && p1/=p2
-
-negated_in :: Clause -> (Name, (Val, Polarity)) -> Bool
-negated_in as a2 = any (negates a2) as
-
-solve_disjuncts :: Pred -> [Clause]
-solve_disjuncts ds = mapMaybe (go []) (map sort ds)
-  where go :: Clause -> [Constraint] -> Maybe Clause
-        go binds [] = Just binds
-
-        -- Ground constraints:
-        go binds (CBin Eq (AVal vx) (AVal vy) : rest) = if vx==vy then go binds rest else Nothing
-        go binds (CBin Neq (AVal vx) (AVal vy) : rest) = if vx/=vy then go binds rest else Nothing        
-        go binds (CBin Lt (AVal vx) (AVal vy) : rest) = if vx<vy then go binds rest else Nothing
-
-        -- (In-)Equality constraints:
-        go binds (CBin Eq (AVar x) (AVal v) : rest) =
-          let bind = (x, (v, Pos)) in 
-          if negated_in binds bind then Nothing
-          else go (bind : binds) (map (subst x v) rest)
-        go binds (CBin Eq (AVal v) (AVar x) : rest) = go binds (CBin Eq (AVar x) (AVal v) : rest)
-        go binds (CBin Neq (AVar x) (AVal v) : rest) =
-          let bind = (x, (v, Neg)) in 
-          if negated_in binds bind then Nothing
-          else go (bind : binds) rest
-        go binds (CBin Neq (AVal v) (AVar x) : rest) = go binds (CBin Neq (AVar x) (AVal v) : rest)
-
-        -- The remaining constraints aren't yet supported:
-        go binds (c : _) = error $ "constraint " ++ show c ++ " not yet supported"
-
-simplify :: [Clause] -> [Clause]
-simplify [] = []
-simplify (c : cs) =
-  case hd of
-    [] -> [[]]
-    _ : _ -> hd : simplify tl
-  where hd = filter (not . negated_in_any cs) c
-        tl = map (filter (not . negated_in c)) cs
-        negated_in_any cs a = any (\as -> negated_in as a) cs
-
-solve :: Pred -> [Clause]
-solve cs = simplify $ solve_disjuncts cs
-
-reduce :: Tree r Pred -> Tree r Pred
-reduce = bind (\p -> case solve p of
-                [] -> Never
-                (_ : _) -> Leaf p) -- At least one disjunct is satisfiable.
-
-mget :: Name -> Pred -> Maybe (Val, Polarity)
-mget x p = do
-  case solve p of
-    [] -> Nothing
-    (m : _) -> lookup x m -- FIXME: There may be multiple solutions.
-
-get :: Name -> Pred -> (Val, Polarity)
-get x p =
-  case mget x p of
-    Nothing -> error $ "name " ++ x ++ " not bound"
-    Just vp -> vp
   
+type St = [(Name, Val)]
+
+empty :: St
+empty = []
+
+upd :: Name -> Val -> St -> St
+upd x v st = (x,v) : st
+
+get :: Name -> St -> Val
+get x [] = error "name not bound"
+get x ((y, v) : rest) = if x==y then v else get x rest
+
+data Exp = 
+    EVal Val
+  | EVar Name  
+  | ELt Exp Exp
+
+einterp :: Exp -> St -> Val
+einterp (EVal v) _ = v
+einterp (EVar x) st = get x st
+einterp (ELt e1 e2) st =
+  case (einterp e1 st, einterp e2 st) of
+    (VFloat r1, VFloat r2) -> VBool (r1 < r2)
+    (_, _) -> error "ill-typed expression"
+
+is_true :: Exp -> St -> Bool
+is_true e st =
+  case einterp e st of
+    VBool b -> b
+    _ -> error "not a Boolean"
+
 data Com =
     Flip Com Com
-  | Nondet Com Com     
-  | Observe Pred
-  | Assign Name Atom
-  | Seq Com Com
+  | Observe Exp
+  | Assign Name Exp
+  | Seq Com Com  
+  | Ite Exp Com Com
 
--- Derived commands:
-ite :: Constraint -> Com -> Com -> Com
-ite phi c1 c2 = Nondet (Seq (Observe [[phi]]) c1) (Seq (Observe [[cneg phi]]) c2)
+interp :: Com -> Tree r St -> Tree r St
+interp (Flip c1 c2) t = bind (\st -> Split (interp c1 (Leaf st)) (interp c2 (Leaf st))) t
+interp (Observe e) t = bind (\st -> if is_true e st then Leaf st else Never) t
+interp (Assign x e) t = bind (\st -> Leaf $ upd x (einterp e st) st) t
+interp (Seq c1 c2) t = interp c2 (interp c1 t)
+interp (Ite e c1 c2) t = bind (\st -> if is_true e st then interp c1 (Leaf st) else interp c2 (Leaf st)) t
 
-interp :: Num r => Com -> Tree r Pred
-interp (Flip c1 c2) = Split (interp c1) (interp c2)
-interp (Nondet c1 c2) = do
-  ds1 <- interp c1
-  ds2 <- interp c2
-  Leaf (union ds1 ds2)
-interp (Observe p) = Leaf p
-interp (Assign x a) = Leaf [[CBin Eq (AVar x) a]]
-interp (Seq c1 c2) = do
-  ds1 <- interp c1
-  ds2 <- interp c2
-  Leaf [union d1 d2 | d1 <- ds1, d2 <- ds2]
-  
 opt :: Fractional r => Tree r a -> Tree r a
 opt (Leaf a) = Leaf a
 opt (Split t1 t2) | is_never (opt t1) && is_never (opt t2) = Never
@@ -272,14 +196,14 @@ opt Never = Never
 opt (Scale r t) | is_never (opt t) = Never
 opt (Scale r t) | otherwise = Scale r $ opt t
 
-infer :: Fractional r => Obs Pred r -> Com -> Sampler (Maybe r)
-infer f c bits = sample f (opt $ reduce $ interp c) bits
+infer :: Fractional r => Obs St r -> Com -> Tree r St -> Sampler (Maybe r)
+infer f c t bits = sample f (opt $ interp c t) bits
 
-run :: Floating r => Obs Pred r -> Com -> Int -> IO ([r], r, r, r, (r, r))
+run :: Floating r => Obs St r -> Com -> Int -> IO (r, (r, r))
 run f c n = do
   g <- newStdGen
   let bits = randoms g :: [Bool]
-  let sampler = infer f c
+  let sampler = infer f c (Leaf empty)
   let (msamples, remaining_bits) = sample_many sampler (\bits -> ([], bits)) n bits
   let samples = catMaybes msamples
   let m = fromIntegral $ length samples
@@ -287,30 +211,17 @@ run f c n = do
   let sqhat = foldl (\b a -> b + (a - mqhat)*(a - mqhat)) 0.0 samples / m
   let bound = (2.58*sqhat)/(sqrt m)
   let confidence = (mqhat - bound, mqhat + bound)
-  return (samples, mqhat, m, bound, confidence)
+  return (bound, confidence)
 
 com1 :: Com
 com1 =
   Seq
   (Flip
-   (Assign "x" (AVal (VFloat 3)))
+   (Assign "x" (EVal (VFloat 3)))
    (Flip
-    (Assign "x" (AVal (VFloat 4)))
-    (Assign "x" (AVal (VFloat 5)))))
-  (Observe [[CBin Lt (AVal (VFloat 3)) (AVar "x")]])
+    (Assign "x" (EVal (VFloat 4)))
+    (Assign "x" (EVal (VFloat 5)))))
+  (Observe (ELt (EVal (VFloat 3)) (EVar "x")))
 
-ex1 = run (fst . get "x") com1 
-
-com2 :: Com
-com2 =
-  ite (CBin Eq (AVar "x") (AVal (VFloat 3)))
-    (Observe [[CBin Lt (AVal (VFloat 2)) (AVar "x")]])
-    (Observe [[CBin Eq (AVar "x") (AVal (VFloat 3))]]) 
+ex1 = run (\st -> get "x" st) com1 
   
-com3 :: Com
-com3 =
-  let cx = Flip (Assign "x" (AVal (VFloat 0))) (Assign "x" (AVal (VFloat 1))) in
-  let cy = Flip (Assign "y" (AVal (VFloat 0))) (Assign "y" (AVal (VFloat 1))) in
-  Seq cx (Seq cy (Observe [[CBin Lt (AVar "x") (AVal (VFloat 1.1))]]))   
-
-ex3 = run (fst . get "x") (Flip (Assign "x" (AVal (VFloat 0))) (Assign "x" (AVal (VFloat 1))))
