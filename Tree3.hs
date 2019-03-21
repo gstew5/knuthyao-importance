@@ -66,8 +66,8 @@ sample_many sampler acc n | n > 0 =
 
 sample :: Fractional r => Obs a r -> Tree r a -> Sampler (Maybe r)
 sample f (Leaf a) bits = (Just $ f a, bits)
-sample f (Split t1 _) (False : bits) = sample f (Scale (1/2) t1) bits
-sample f (Split _ t2) (True : bits)  = sample f (Scale (1/2) t2) bits
+sample f (Split t1 _) (False : bits) = sample f t1 bits
+sample f (Split _ t2) (True : bits)  = sample f t2 bits
 sample f (Corec h) bits = sample f (h (Corec h)) bits
 sample _ Never bits = (Nothing, bits)
 sample f (Scale r t) bits = let (rt, rest) = sample f t bits in (fmap ((*) r) rt, rest)
@@ -153,15 +153,25 @@ get x ((y, v) : rest) = if x==y then v else get x rest
 
 data Exp = 
     EVal Val
-  | EVar Name  
+  | EVar Name
+  | EEq Exp Exp
   | ELt Exp Exp
+  | EPlus Exp Exp
 
 einterp :: Exp -> St -> Val
 einterp (EVal v) _ = v
 einterp (EVar x) st = get x st
+einterp (EEq e1 e2) st =
+  case (einterp e1 st, einterp e2 st) of
+    (VFloat r1, VFloat r2) -> VBool (r1 == r2)
+    (_, _) -> error "ill-typed expression"
 einterp (ELt e1 e2) st =
   case (einterp e1 st, einterp e2 st) of
     (VFloat r1, VFloat r2) -> VBool (r1 < r2)
+    (_, _) -> error "ill-typed expression"
+einterp (EPlus e1 e2) st =
+  case (einterp e1 st, einterp e2 st) of
+    (VFloat r1, VFloat r2) -> VFloat (r1 + r2)
     (_, _) -> error "ill-typed expression"
 
 is_true :: Exp -> St -> Bool
@@ -171,18 +181,31 @@ is_true e st =
     _ -> error "not a Boolean"
 
 data Com =
-    Flip Com Com
-  | Observe Exp
+    Skip
+  | Abort
+  | Flip Com Com
   | Assign Name Exp
   | Seq Com Com  
   | Ite Exp Com Com
+  
+-- Derived commands:
+  | Observe Exp
+  | While Exp Com 
 
 interp :: Com -> Tree r St -> Tree r St
+interp Skip t = t
+interp Abort t = bind (\_ -> Never) t
 interp (Flip c1 c2) t = bind (\st -> Split (interp c1 (Leaf st)) (interp c2 (Leaf st))) t
-interp (Observe e) t = bind (\st -> if is_true e st then Leaf st else Never) t
 interp (Assign x e) t = bind (\st -> Leaf $ upd x (einterp e st) st) t
 interp (Seq c1 c2) t = interp c2 (interp c1 t)
 interp (Ite e c1 c2) t = bind (\st -> if is_true e st then interp c1 (Leaf st) else interp c2 (Leaf st)) t
+
+-- Derived commands:
+interp (Observe e) t = interp (Ite e Skip Abort) t
+--interp (While e c) = lfp (\t -> interp (Ite e (Seq c (While e c)) Skip) t)
+
+lfp :: (a -> a) -> a
+lfp = undefined
 
 opt :: Fractional r => Tree r a -> Tree r a
 opt (Leaf a) = Leaf a
@@ -199,11 +222,11 @@ opt (Scale r t) | otherwise = Scale r $ opt t
 infer :: Fractional r => Obs St r -> Com -> Tree r St -> Sampler (Maybe r)
 infer f c t bits = sample f (opt $ interp c t) bits
 
-run :: Floating r => Obs St r -> Com -> Int -> IO (r, (r, r))
-run f c n = do
+run :: Floating r => Obs St r -> Com -> Tree r St -> Int -> IO (r, (r, r))
+run f c tinit n = do
   g <- newStdGen
   let bits = randoms g :: [Bool]
-  let sampler = infer f c (Leaf empty)
+  let sampler = infer f c tinit
   let (msamples, remaining_bits) = sample_many sampler (\bits -> ([], bits)) n bits
   let samples = catMaybes msamples
   let m = fromIntegral $ length samples
@@ -223,5 +246,23 @@ com1 =
     (Assign "x" (EVal (VFloat 5)))))
   (Observe (ELt (EVal (VFloat 3)) (EVar "x")))
 
-ex1 = run (\st -> get "x" st) com1 
+ex1 = run (get "x") com1 (Leaf empty)
   
+com2 :: Com
+com2 =
+  Ite (EEq (EVar "x") (EVal (VFloat 3)))
+    (Flip (Assign "x" (EVal (VFloat 3))) (Assign "x" (EVal (VFloat 4))))
+    (Assign "x" (EVal (VFloat 3)))
+
+tinit2 = (Leaf (upd "x" (VFloat 3) empty))
+ex2 = run (get "x") com2 tinit2
+
+com3 :: Com
+com3 =
+  Seq (Assign "n" (EVal (VFloat 0))) $
+  While (ELt (EVar "n") (EVal (VFloat 3)))
+    (Flip
+      (Assign "n" (EPlus (EVar "n") (EVal (VFloat 1))))
+      Skip) 
+
+ex3 = run (get "x") com3 (Leaf empty)
