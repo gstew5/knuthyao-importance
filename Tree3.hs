@@ -16,6 +16,16 @@ is_never :: Tree r a -> Bool
 is_never Never = True
 is_never _ = False
 
+prefix :: Int -> Tree r a -> Tree r a
+prefix 0 _ = Never
+prefix n t | n > 0 =
+  case t of
+   Leaf a -> Leaf a
+   Split t1 t2 -> Split (prefix (n-1) t1) (prefix (n-1) t2)
+   Corec f -> prefix n (f (Corec f))
+   Never -> Never
+   Scale r t -> Scale r (prefix (n-1) t)
+
 instance (Show r, Show a) => Show (Tree r a) where
   show (Leaf a) = show a
   show (Split t1 t2) = "split (" ++ show t1 ++ ", " ++ show t2 ++ ")"
@@ -187,10 +197,10 @@ data Com =
   | Assign Name Exp
   | Seq Com Com  
   | Ite Exp Com Com
-  
+
 -- Derived commands:
   | Observe Exp
-  | While Exp Com 
+  | While Exp Com
 
 interp :: Com -> Tree r St -> Tree r St
 interp Skip t = t
@@ -202,10 +212,12 @@ interp (Ite e c1 c2) t = bind (\st -> if is_true e st then interp c1 (Leaf st) e
 
 -- Derived commands:
 interp (Observe e) t = interp (Ite e Skip Abort) t
---interp (While e c) = lfp (\t -> interp (Ite e (Seq c (While e c)) Skip) t)
+interp (While e c) t =
+  mu (\f t -> bind (\st -> if is_true e st then f (interp c (Leaf st))
+                           else Leaf st) t) t
 
-lfp :: (a -> a) -> a
-lfp = undefined
+mu :: ((Tree r a -> Tree r a) -> (Tree r a -> Tree r a)) -> (Tree r a -> Tree r a)
+mu f = f (mu f)
 
 opt :: Fractional r => Tree r a -> Tree r a
 opt (Leaf a) = Leaf a
@@ -219,14 +231,15 @@ opt Never = Never
 opt (Scale r t) | is_never (opt t) = Never
 opt (Scale r t) | otherwise = Scale r $ opt t
 
-infer :: Fractional r => Obs St r -> Com -> Tree r St -> Sampler (Maybe r)
-infer f c t bits = sample f (opt $ interp c t) bits
+infer :: Fractional r => Int -> Obs St r -> Com -> Tree r St -> Sampler (Maybe r)
+--infer d f c t bits = sample f (opt $ prefix d $ interp c t) bits
+infer d f c t bits = sample f (interp c t) bits
 
-run :: Floating r => Obs St r -> Com -> Tree r St -> Int -> IO (r, (r, r))
-run f c tinit n = do
+run :: Floating r => Obs St r -> Com -> Tree r St -> Int -> Int -> IO (r, r, (r, r))
+run f c tinit d n = do
   g <- newStdGen
   let bits = randoms g :: [Bool]
-  let sampler = infer f c tinit
+  let sampler = infer d f c tinit
   let (msamples, remaining_bits) = sample_many sampler (\bits -> ([], bits)) n bits
   let samples = catMaybes msamples
   let m = fromIntegral $ length samples
@@ -234,7 +247,7 @@ run f c tinit n = do
   let sqhat = foldl (\b a -> b + (a - mqhat)*(a - mqhat)) 0.0 samples / m
   let bound = (2.58*sqhat)/(sqrt m)
   let confidence = (mqhat - bound, mqhat + bound)
-  return (bound, confidence)
+  return (m, bound, confidence)
 
 com1 :: Com
 com1 =
@@ -246,7 +259,7 @@ com1 =
     (Assign "x" (EVal (VFloat 5)))))
   (Observe (ELt (EVal (VFloat 3)) (EVar "x")))
 
-ex1 = run (get "x") com1 (Leaf empty)
+ex1 = run (get "x") com1 (Leaf empty) 10
   
 com2 :: Com
 com2 =
@@ -255,14 +268,18 @@ com2 =
     (Assign "x" (EVal (VFloat 3)))
 
 tinit2 = (Leaf (upd "x" (VFloat 3) empty))
-ex2 = run (get "x") com2 tinit2
+ex2 = run (get "x") com2 tinit2 10
 
+-- The expected number of heads (failures) of a fair coin (0.5/(1-0.5) = 1)
 com3 :: Com
 com3 =
-  Seq (Assign "n" (EVal (VFloat 0))) $
-  While (ELt (EVar "n") (EVal (VFloat 3)))
-    (Flip
-      (Assign "n" (EPlus (EVar "n") (EVal (VFloat 1))))
-      Skip) 
+  Seq (Assign "x" (EVal (VFloat 0))) $  
+  Seq (Assign "failures" (EVal (VFloat 0))) $
+  While (EEq (EVar "x") (EVal (VFloat 0)))
+   (Flip
+     (Assign "failures" (EPlus (EVar "failures") (EVal (VFloat 1))))
+     (Assign "x" (EVal (VFloat 1))))
 
-ex3 = run (get "x") com3 (Leaf empty)
+ex3 = run (get "failures") com3 (Leaf empty) 10
+
+-- The uniform distribution over three events
