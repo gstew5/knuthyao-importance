@@ -1,5 +1,5 @@
-{-# LANGUAGE TypeSynonymInstances, FlexibleInstances #-}
-module Tree2 where
+{-# LANGUAGE TypeSynonymInstances, FlexibleInstances, GADTs, RankNTypes #-}
+module Main where
 
 import Data.List (union, intersectBy, sort)
 import Data.Maybe (catMaybes, mapMaybe)
@@ -190,27 +190,31 @@ is_true e st =
     VBool b -> b
     _ -> error "not a Boolean"
 
-data Com =
-    Skip
-  | Abort
-  | Flip Com Com
-  | Assign Name Exp
-  | Seq Com Com  
-  | Ite Exp Com Com
+type Pattern = forall r a. Tree r a -> Tree r a -> Tree r a
+
+data Com where 
+  Skip :: Com
+  Abort :: Com
+  Combine :: Pattern -> Com -> Com -> Com  
+  Assign :: Name -> Exp -> Com
+  Seq :: Com -> Com -> Com
+  Ite :: Exp -> Com -> Com -> Com
 
 -- Derived commands:
-  | Observe Exp
-  | While Exp Com
+  Flip :: Com -> Com -> Com  
+  Observe :: Exp -> Com
+  While :: Exp -> Com -> Com
 
 interp :: Com -> Tree r St -> Tree r St
 interp Skip t = t
 interp Abort t = bind (\_ -> Never) t
-interp (Flip c1 c2) t = bind (\st -> Split (interp c1 (Leaf st)) (interp c2 (Leaf st))) t
+interp (Combine p c1 c2) t = bind (\st -> p (interp c1 (Leaf st)) (interp c2 (Leaf st))) t
 interp (Assign x e) t = bind (\st -> Leaf $ upd x (einterp e st) st) t
 interp (Seq c1 c2) t = interp c2 (interp c1 t)
 interp (Ite e c1 c2) t = bind (\st -> if is_true e st then interp c1 (Leaf st) else interp c2 (Leaf st)) t
 
 -- Derived commands:
+interp (Flip c1 c2) t = interp (Combine Split c1 c2) t
 interp (Observe e) t = interp (Ite e Skip Abort) t
 interp (While e c) t =
   mu (\f t -> bind (\st -> if is_true e st then f (interp c (Leaf st))
@@ -283,3 +287,14 @@ com3 =
 ex3 = run (get "failures") com3 (Leaf empty) 10
 
 -- The uniform distribution over three events
+com4 :: Com
+com4 =
+  Combine one_third (Assign "x" (EVal (VFloat 1)))
+    (Flip (Assign "x" (EVal (VFloat 2)))
+          (Assign "x" (EVal (VFloat 3))))
+  where one_third t1 t2 = Corec (\t -> Split t1 (Split t2 t))
+ex4 = run (get "x") com4 (Leaf empty) 10
+
+main = do
+  r <- ex4 1000000
+  putStrLn $ show r
