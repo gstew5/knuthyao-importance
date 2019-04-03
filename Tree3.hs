@@ -1,16 +1,27 @@
 {-# LANGUAGE TypeSynonymInstances, FlexibleInstances, GADTs, RankNTypes #-}
 module Main where
 
-import Data.List (union, intersectBy, sort)
+import Data.List (union, intersectBy, sort, findIndices)
 import Data.Maybe (catMaybes, mapMaybe)
 import System.Random
+import Data.Char (intToDigit)
+import Numeric (floatToDigits)
 
 data Tree r a =
-    Leaf a
+    Leaf a 
   | Split (Tree r a) (Tree r a)
   | Corec (Tree r a -> Tree r a)
   | Never
   | Scale r (Tree r a)
+
+e :: Fractional r => a -> a -> Tree r a
+e a1 a2 = undefined -- tree that returns a1 with probability (e - 2) and a2 with probability (1 - (e - 2)). 
+
+dgd :: Fractional r => r -> Tree r a
+dgd sigma = undefined -- tree that samples from discrete gaussian with \mu = 0, \sigma = sigma
+
+two_third :: a -> a -> Tree r a
+two_third a1 a2 = Corec (\rest -> Split (Leaf a1) (Split (Leaf a2) rest))
 
 is_never :: Tree r a -> Bool
 is_never Never = True
@@ -59,6 +70,15 @@ bind g (Scale r t) = Scale r (bind g t)
 instance Num r => Monad (Tree r) where
   (>>=) t g = bind g t
   return a = pure a
+
+list2tree :: [[a]] -> Tree r a
+list2tree ls = go 1 ls
+  where
+    go _ [] = error "Help!"
+    go n ([] : rest) = go (2*n) rest
+    go n ([a] : rest) = Split (Leaf a) (go (2*n) rest)
+    go n ([a,b] : rest) = Split (Leaf a) (Leaf b)
+    go n (l : rest) = Split (go (2*n) (take n l : rest)) (go (2*n) (drop n l : rest))
 
 type Bits = [Bool]
 
@@ -239,6 +259,20 @@ infer :: Fractional r => Int -> Obs St r -> Com -> Tree r St -> Sampler (Maybe r
 --infer d f c t bits = sample f (opt $ prefix d $ interp c t) bits
 infer d f c t bits = sample f (interp c t) bits
 
+run_tree :: Floating r => Obs s r -> Tree r s -> Int -> Int -> IO ([r], r, r, (r, r))
+run_tree f t d n = do
+  g <- newStdGen
+  let bits = randoms g :: [Bool]
+  let sampler = sample f t
+  let (msamples, remaining_bits) = sample_many sampler (\bits -> ([], bits)) n bits
+  let samples = catMaybes msamples
+  let m = fromIntegral $ length samples
+  let mqhat = foldl (+) 0.0 samples / m
+  let sqhat = foldl (\b a -> b + (a - mqhat)*(a - mqhat)) 0.0 samples / m
+  let bound = (2.58*sqhat)/(sqrt m)
+  let confidence = (mqhat - bound, mqhat + bound)
+  return (samples, m, bound, confidence)
+
 run :: Floating r => Obs St r -> Com -> Tree r St -> Int -> Int -> IO (r, r, (r, r))
 run f c tinit d n = do
   g <- newStdGen
@@ -294,6 +328,38 @@ com4 =
           (Assign "x" (EVal (VFloat 3))))
   where one_third t1 t2 = Corec (\t -> Split t1 (Split t2 t))
 ex4 = run (get "x") com4 (Leaf empty) 10
+
+-- Discrete Gaussians
+-- This construction comes from Section 5 of:
+-- SAMPLING FROM DISCRETE GAUSSIANS FOR LATTICE-BASED CRYPTOGRAPHY ON A CONSTRAINED DEVICE
+-- by Dwarakanath and Galbraith
+a 0 = 1 
+a x | x > 0 = c * a (x-1) * b (x-1) * b (x-1) -- exp(-x^2)
+b 0 = 1 
+b x | x > 0 = c * b (x-1) -- exp(-x)
+c = exp (-1)
+
+float2bits :: (RealFloat a, Show a) => a -> Bits
+float2bits x =
+  if x >= 1.0 then error $ "float2bits: argument " ++ show x ++ " must be <= 1.0" 
+  else let (d,e) = floatToDigits 2 x in map to_bit $ shift e d
+  where shift 0 d = d
+        shift n d | n < 0 = shift (n+1) (0 : d)
+        to_bit 0 = False
+        to_bit 1 = True
+
+-- ASSUMES: k>=1
+pdg_pmf :: Int -> Double -> [Int -> Bool]
+pdg_pmf k sigma = [to_fun (x / normalizing_constant) | x <- unnormalized]
+  where unnormalized = [f $ fromIntegral x | x <- [0..k-1]]
+        f x = exp(-(x*x) / (2*sigma*sigma))
+        normalizing_constant = sum unnormalized
+        to_fun d i | i >= length (float2bits d) = False
+        to_fun d i | i < length (float2bits d) = float2bits d !! i
+
+pdg :: Int -> Double -> Int -> Tree r Int
+pdg k sigma prec = list2tree [entries i | i <- [0..prec-1]]
+  where entries i = findIndices (\g -> g i) (pdg_pmf k sigma)
 
 main = do
   r <- ex4 1000000
