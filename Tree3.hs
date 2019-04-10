@@ -14,6 +14,14 @@ data Tree r a =
   | Never
   | Scale r (Tree r a)
 
+-- Taylor expansion:
+eapprox :: Fractional r => Int -> Int -> r
+eapprox x 0 = 1
+eapprox x n | n > 0 = fromIntegral (x^n) / fromIntegral (fact n) + eapprox x (n-1)
+  where fact :: Int -> Integer
+        fact 0 = 1
+        fact k | k > 0 = fromIntegral k * fact (k - 1)  
+
 e :: Fractional r => a -> a -> Tree r a
 e a1 a2 = undefined -- tree that returns a1 with probability (e - 2) and a2 with probability (1 - (e - 2)). 
 
