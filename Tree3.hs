@@ -313,8 +313,9 @@ com2 =
     (Flip (Assign "x" (EVal (VFloat 3))) (Assign "x" (EVal (VFloat 4))))
     (Assign "x" (EVal (VFloat 3)))
 
-tinit2 = (Leaf (upd "x" (VFloat 3) empty))
-ex2 = run (get "x") com2 tinit2 10
+tinit2 f = (Leaf (upd "x" (VFloat f) empty))
+ex2 = run (get "x") com2 (tinit2 3) 10
+ex2b = run (get "x") com2 (Split (tinit2 3) (tinit2 4)) 10
 
 -- The expected number of heads (failures) of a fair coin (0.5/(1-0.5) = 1)
 com3 :: Com
@@ -328,14 +329,59 @@ com3 =
 
 ex3 = run (get "failures") com3 (Leaf empty) 10
 
+-- The expected number of heads (failures) of a (2/3,1/3) biased coin (0.5/(1-0.5) = 1)
+com3_biased :: Com
+com3_biased =
+  Seq (Assign "x" (EVal (VFloat 0))) $  
+  Seq (Assign "failures" (EVal (VFloat 0))) $
+  While (EEq (EVar "x") (EVal (VFloat 0)))
+   (Combine biased
+     (Assign "failures" (EPlus (EVar "failures") (EVal (VFloat 1))))
+     (Assign "x" (EVal (VFloat 1))))
+  where biased t1 t2 = Corec (\t -> Split t1 (Split t2 t))
+
+ex3_biased = run (get "failures") com3_biased (Leaf empty) 10
+
 -- The uniform distribution over three events
-com4 :: Com
-com4 =
-  Combine one_third (Assign "x" (EVal (VFloat 1)))
-    (Flip (Assign "x" (EVal (VFloat 2)))
-          (Assign "x" (EVal (VFloat 3))))
-  where one_third t1 t2 = Corec (\t -> Split t1 (Split t2 t))
-ex4 = run (get "x") com4 (Leaf empty) 10
+unif3 :: Name -> Com
+unif3 x =
+  Combine one_third (Assign x (EVal (VFloat 1)))
+    (Flip (Assign x (EVal (VFloat 2)))
+          (Assign x (EVal (VFloat 3))))
+  where one_third t1 t2 = Corec (\t -> Split t2 (Split t1 t))
+ex_unif3 = run (get "x") (unif3 "x") (Leaf empty) 10
+
+-- Anindya's slicing example
+slice1 :: Com
+slice1 =
+  Seq (unif3 "x") $
+  Seq (unif3 "y") $
+  Observe (ELt (EVal (VFloat 1)) (EVar "y"))
+ex_slice1 = run (get "x") slice1 (Leaf empty) 10
+
+-- Slice wrt. x
+slice1_x :: Com
+slice1_x =
+  Seq (unif3 "x") Skip
+ex_slice1_x = run (get "x") slice1 (Leaf empty) 10
+
+-- An even smaller slicing example
+slice0 :: Com
+slice0 =
+  Seq (unif01 "x") $
+  Seq (unif01 "y") $
+  Observe (EEq (EPlus (EVar "x") (EVar "y")) (EVal (VFloat 1)))
+  where unif01 x = Flip (Assign x (EVal (VFloat 0))) (Assign x (EVal (VFloat 1)))
+ex_slice0 = run (get "x") slice0 (Leaf empty) 10
+
+slice0_x :: Com
+slice0_x =
+  unif01 "x"
+  where unif01 x = Flip (Assign x (EVal (VFloat 0))) (Assign x (EVal (VFloat 1)))
+ex_slice0_x = run (get "x") slice0_x (Leaf empty) 10
+
+         
+
 
 -- Discrete Gaussians
 -- This construction comes from Section 5 of:
@@ -370,5 +416,5 @@ pdg k sigma prec = list2tree [entries i | i <- [0..prec-1]]
   where entries i = findIndices (\g -> g i) (pdg_pmf k sigma)
 
 main = do
-  r <- ex4 1000000
+  r <- ex_unif3 1000000
   putStrLn $ show r
