@@ -14,6 +14,28 @@ data Tree r a =
   | Never
   | Scale r (Tree r a)
 
+-- Product distribution trees (sequential).
+product_tree :: Num r => Tree r a -> Tree r b -> Tree r (a, b)
+product_tree t1 t2 = t1 >>= \x -> (x,) <$> t2
+
+-- Parallel product (BOGUS).
+product_tree' :: Tree r a -> Tree r b -> Tree r (a, b)
+product_tree' t1 (Leaf y) = (,y) <$> t1
+product_tree' (Leaf x) t2 = (x,) <$> t2
+product_tree' Never _ = Never
+product_tree' _ Never = Never
+product_tree' (Split t1 t2) (Split t1' t2') =
+  Split (product_tree' t1 t1') (product_tree' t2 t2')
+product_tree' (Corec f) t2 = product_tree' (f (Corec f)) t2
+product_tree' t1 (Corec f) = product_tree' t1 (f (Corec f))
+-- TODO: Scale?
+
+proj1_tree :: Tree r (a, b) -> Tree r a
+proj1_tree = fmap fst
+
+proj2_tree :: Tree r (a, b) -> Tree r b
+proj2_tree = fmap snd
+
 -- Taylor expansion:
 eapprox :: Fractional r => Int -> Int -> r
 eapprox x 0 = 1
