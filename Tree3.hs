@@ -346,19 +346,18 @@ com3_biased =
 
 ex3_biased = run (get "failures") com3_biased (Leaf empty) 10
 
-binomial :: Float -> Float -> Com
-binomial k n =
+binomial :: Float -> Name -> Com
+binomial n x =
+  Seq (Assign x (EVal (VFloat 0))) $
   Seq (Assign "i" (EVal (VFloat 0))) $
-  Seq (Assign "heads" (EVal (VFloat 0))) $
-  Seq (While (ELt (EVar "i") (EVal (VFloat n)))
-         (Seq
-           (Flip
-             (Assign "heads" (EPlus (EVar "heads") (EVal (VFloat 1))))
-             Skip)
-           (Assign "i" (EPlus (EVar "i") (EVal (VFloat 1)))))) $
-  Observe (EEq (EVar "heads") (EVal (VFloat k)))
+  While (ELt (EVar "i") (EVal (VFloat n)))
+    (Seq
+      (Flip
+        (Assign x (EPlus (EVar x) (EVal (VFloat 1))))
+        Skip)
+      (Assign "i" (EPlus (EVar "i") (EVal (VFloat 1)))))
 
-ex_binomial k n = run (\_ -> 1) (binomial k n) (Leaf empty) 10 
+ex_binomial n = run (get "heads") (binomial n "heads") (Leaf empty) 10
 
 -- The uniform distribution over three events
 unif3 :: Name -> Com
