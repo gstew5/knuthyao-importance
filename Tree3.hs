@@ -223,10 +223,13 @@ type Pattern = forall r a. Tree r a -> Tree r a -> Tree r a
 data Com where 
   Skip :: Com
   Abort :: Com
+--  Lift :: (forall r. Tree r St) -> Com
   Combine :: Pattern -> Com -> Com -> Com  
   Assign :: Name -> Exp -> Com
   Seq :: Com -> Com -> Com
   Ite :: Exp -> Com -> Com -> Com
+--  Lam :: (Com -> Com) -> Com
+--  App :: Com -> Com -> Com
 
 -- Derived commands:
   Flip :: Com -> Com -> Com  
@@ -240,6 +243,7 @@ interp (Combine p c1 c2) t = bind (\st -> p (interp c1 (Leaf st)) (interp c2 (Le
 interp (Assign x e) t = bind (\st -> Leaf $ upd x (einterp e st) st) t
 interp (Seq c1 c2) t = interp c2 (interp c1 t)
 interp (Ite e c1 c2) t = bind (\st -> if is_true e st then interp c1 (Leaf st) else interp c2 (Leaf st)) t
+--interp (Lam f) t = interp (f (Lift t)) t
 
 -- Derived commands:
 interp (Flip c1 c2) t = interp (Combine Split c1 c2) t
@@ -329,7 +333,7 @@ com3 =
 
 ex3 = run (get "failures") com3 (Leaf empty) 10
 
--- The expected number of heads (failures) of a (2/3,1/3) biased coin ((1-0.5)/0.5 = 1)
+-- The expected number of heads (failures) of a (2/3,1/3) biased coin ((1-1/3)/(1/3) = 2)
 com3_biased :: Com
 com3_biased =
   Seq (Assign "x" (EVal (VFloat 0))) $  
@@ -341,6 +345,20 @@ com3_biased =
   where biased t1 t2 = Corec (\t -> Split t1 (Split t2 t))
 
 ex3_biased = run (get "failures") com3_biased (Leaf empty) 10
+
+binomial :: Float -> Float -> Com
+binomial k n =
+  Seq (Assign "i" (EVal (VFloat 0))) $
+  Seq (Assign "heads" (EVal (VFloat 0))) $
+  Seq (While (ELt (EVar "i") (EVal (VFloat n)))
+         (Seq
+           (Flip
+             (Assign "heads" (EPlus (EVar "heads") (EVal (VFloat 1))))
+             Skip)
+           (Assign "i" (EPlus (EVar "i") (EVal (VFloat 1)))))) $
+  Observe (EEq (EVar "heads") (EVal (VFloat k)))
+
+ex_binomial k n = run (\_ -> 1) (binomial k n) (Leaf empty) 10 
 
 -- The uniform distribution over three events
 unif3 :: Name -> Com
@@ -369,8 +387,8 @@ ex_slice1_x = run (get "x") slice1 (Leaf empty) 10
 slice0 :: Com
 slice0 =
   Seq (unif01 "x") $
-  Seq (unif01 "y") $
-  Observe (EEq (EPlus (EVar "x") (EVar "y")) (EVal (VFloat 1)))
+  Seq (unif3 "y") $
+  Observe (ELt (EVal (VFloat 1)) (EVar "y"))
   where unif01 x = Flip (Assign x (EVal (VFloat 0))) (Assign x (EVal (VFloat 1)))
 ex_slice0 = run (get "x") slice0 (Leaf empty) 10
 
