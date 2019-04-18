@@ -18,7 +18,7 @@ data Tree r a =
 product_tree :: Num r => Tree r a -> Tree r b -> Tree r (a, b)
 product_tree t1 t2 = t1 >>= \x -> (x,) <$> t2
 
--- Parallel product (BOGUS).
+-- Parallel product (NOT GOOD).
 product_tree' :: Tree r a -> Tree r b -> Tree r (a, b)
 product_tree' t1 (Leaf y) = (,y) <$> t1
 product_tree' (Leaf x) t2 = (x,) <$> t2

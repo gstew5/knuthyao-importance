@@ -3,10 +3,9 @@
 {-# LANGUAGE FlexibleInstances, TypeSynonymInstances #-}
 
 -- | KY trees in open recursion style. It seems less convenient in a
--- couple ways (no regular functor or monad instances, and harder to
--- define functions by simultaneous recursion on multiple arguments),
--- but gives an interesting way to construct infinite trees using
--- anamorphisms defined by coalgebras.
+-- couple ways (e.g., no regular functor or monad instances, plus it's
+-- just weird), but gives an interesting way to construct infinite
+-- trees from coalgebras.
 
 module Main where
 
@@ -37,9 +36,10 @@ type Tree a = Fix (TreeF a)
 
 -- A TreeF-algebra is a type Y and a function [alg : A + Y*Y + 1 -> Y].
 
--- For any such algebra, there exists a unique catamorphism
--- [cata : Tree -> Y], the tree recursor (because Tree is the initial
--- TreeF-algebra).
+-- For any such algebra, there exists a unique homomorphism from Tree
+-- to Y, [cata : Tree -> Y] (because Tree is the initial
+-- TreeF-algebra), which is the tree recursor specialized to that
+-- algebra.
 
 -- E.g., let Y = Int and
 -- alg a = 1
@@ -52,7 +52,7 @@ type Tree a = Fix (TreeF a)
 -- A TreeF-coalgebra is a type Y and a function [coalg : Y -> A + Y*Y + 1].
 
 -- For any such coalgebra, there exists a unique anamorphism
--- [ana : Y -> Tree], the tree generator from seed of type Y (because
+-- [ana : Y -> Tree], a tree generator from seed of type Y (because
 -- Tree is the final TreeF-coalgebra).
 
 -- E.g., Y = ? (TODO: how to define the construction of a tree from a
@@ -79,8 +79,7 @@ mkNever :: Tree a
 mkNever = Fix Never
 
 
--- General setup for algebras/coalgebras and
--- catamorphisms/anamorphisms.
+-- General setup for algebras/coalgebras and cata-/anamorphisms.
 type Algebra f a = f a -> a
 type Coalgebra f a = a -> f a
 
@@ -91,9 +90,9 @@ ana :: Functor f => Coalgebra f b -> b -> Fix f
 ana coalg = Fix . fmap (ana coalg) . coalg
 
 -- A hylomorphism is an anamorphism followed by a catamorphism. For
--- example, when the functor is ListF, hylomorphisms correspond to
--- computations whose call stack resembles a list (first build up the
--- stack, then collapse it down to accumulate a result).
+-- example, when the functor is NatF or ListF, hylomorphisms
+-- correspond to computations whose call stack resembles a list (first
+-- build up the stack, then collapse it down to accumulate a result).
 hylo :: Functor f => Algebra f b -> Coalgebra f a -> a -> b
 hylo alg coalg = cata alg . ana coalg
 
@@ -136,6 +135,7 @@ treeOfTree' = ana coalg
     coalg (Split' t1 t2) = Split t1 t2
     coalg Never' = Never
 
+
 -- Tree size function.
 tree_size :: Tree a -> Int
 tree_size = cata alg
@@ -176,8 +176,9 @@ prefix' n = ana coalg
     coalg (Fix (Split t1 t2)) = Split (prefix' (n-1) t1) (prefix' (n-1) t2)
     coalg (Fix t) = t
 
--- Prefix should really be defined by induction on the natural number
--- argument instead.
+-- The above definitions are cheating a bit by using explicit
+-- recursion inside of the algebra/coalgebra. We can avoid this by
+-- doing induction on natural numbers instead.
 
 data NatF a =
   O
@@ -188,21 +189,33 @@ type Nat = Fix NatF
 type NatAlgebra a = Algebra NatF a
 type NatCoalgebra a = Coalgebra NatF a
 
-natOfInt :: Int -> Nat
-natOfInt = ana coalg
-  where
-    coalg :: NatCoalgebra Int
-    coalg n | n <= 0 = O
-    coalg n = S (n-1)
+natOfIntCoalg :: NatCoalgebra Int
+natOfIntCoalg n | n <= 0 = O
+natOfIntCoalg n = S (n-1)
 
-prefix'' :: Nat -> Tree a -> Tree a
-prefix'' = cata alg
+natOfInt :: Int -> Nat
+natOfInt = ana natOfIntCoalg
+
+prefixAlg :: NatAlgebra (Tree a -> Tree a)
+prefixAlg O = const mkNever
+prefixAlg (S f) = \t -> case t of
+  Fix (Split t1 t2) -> mkSplit (f t1) (f t2)
+  _ -> t
+
+-- First build up the nat from an int, then collapse it to build the
+-- prefix function.
+prefix'' :: Int -> Tree a -> Tree a
+prefix'' = hylo prefixAlg natOfIntCoalg
   where
     alg :: NatAlgebra (Tree a -> Tree a)
     alg O = const mkNever
     alg (S f) = \t -> case t of
       Fix (Split t1 t2) -> mkSplit (f t1) (f t2)
       _ -> t
+    coalg :: NatCoalgebra Int
+    coalg n | n <= 0 = O
+    coalg n = S (n-1)
+
 
 -- fmap
 treeMap :: (a -> b) -> Tree a -> Tree b
@@ -228,7 +241,7 @@ bind t f = μ $ treeMap f t
 product_tree :: Tree a -> Tree b -> Tree (a, b)
 product_tree t1 t2 = bind t1 $ \x -> treeMap (x,) t2
 
--- Parallel product (BOGUS).
+-- Parallel product (NOT GOOD).
 product_tree' :: Tree a -> Tree b -> Tree (a, b)
 product_tree' = cata alg
   where
@@ -248,50 +261,81 @@ proj2_tree :: Tree (a, b) -> Tree b
 proj2_tree = treeMap snd
 
 
-data ListF a b =
-  Nil
-  | Cons a b
-  deriving (Functor, Show)
+-- data ListF a b =
+--   Nil
+--   | Cons a b
+--   deriving (Functor, Show)
 
-type List a = Fix (ListF a)
-type ListAlgebra a b = Algebra (ListF a) b
-type ListCoalgebra a b = Coalgebra (ListF a) b
+-- type List a = Fix (ListF a)
+-- type ListAlgebra a b = Algebra (ListF a) b
+-- type ListCoalgebra a b = Coalgebra (ListF a) b
 
-mkList :: [a] -> List a
-mkList = ana coalg
+-- mkList :: [a] -> List a
+-- mkList = ana coalg
+--   where
+--     coalg :: ListCoalgebra a [a]
+--     coalg [] = Nil
+--     coalg (x:xs) = Cons x xs
+
+
+headMaybe :: [a] -> Maybe a
+headMaybe [] = Nothing
+headMaybe (x:_) = Just x
+
+type Bits = [Bool]
+type Sampler = State Bits
+
+sample :: Tree a -> Sampler (Maybe a)
+sample = cata alg
   where
-    coalg :: ListCoalgebra a [a]
-    coalg [] = Nil
-    coalg (x:xs) = Cons x xs
+    alg :: TreeAlgebra a (Sampler (Maybe a))
+    alg (Leaf x) = return $ Just x
+    alg (Split s1 s2) = do
+      bit <- gets headMaybe
+      case bit of
+        Just b -> do
+          modify tail
+          if b then s1 else s2
+        Nothing -> error "sample: out of bits"
+    alg Never = return Nothing
+
+n_samples :: Tree a -> Int -> Sampler [Maybe a]
+n_samples t n = mapM (const $ sample t) [0..n]
+
+run_sampler :: Sampler a -> Bits -> (a, Bits)
+run_sampler = runState
 
 
 main :: IO ()
 main = do
-  -- g <- newStdGen
-  -- let bits = randoms g :: [Bool]
+  g <- newStdGen
+  let bits = randoms g :: [Bool]
   -- let bitList = mkList bits
-  -- putStrLn $ show $ prefix'' (natOfInt 5) t1
-  -- putStrLn $ show $ prefix'' (natOfInt 5) t2
+  -- putStrLn $ show $ prefix'' 5 t1
+  -- putStrLn $ show $ prefix'' 5 t2
   let t = product_tree t1 t2
   let t' = product_tree' t1 t2
-  putStrLn $ show $ prefix'' (natOfInt 5) t
-  putStrLn ""
-  putStrLn $ show $ prefix'' (natOfInt 5) t'
-  putStrLn ""
-  putStrLn $ toSexp $ prefix'' (natOfInt 10) t
-  putStrLn ""
-  putStrLn $ toSexp $ prefix'' (natOfInt 10) t'
-  
+  -- putStrLn $ show t
+  -- putStrLn ""
+  -- putStrLn $ show $ prefix'' 5 t'
+  -- putStrLn ""
+  -- putStrLn $ toSexp $ prefix'' 10 t
+  -- putStrLn ""
+  -- putStrLn $ toSexp $ prefix'' 10 t'
+
   -- let t1' = proj1_tree t
   -- let t1'' = proj1_tree t'
-  -- putStrLn $ show $ prefix'' (natOfInt 5) t1'
-  -- putStrLn $ show $ prefix'' (natOfInt 5) t1''
-  -- putStrLn $ toSexp $ prefix'' (natOfInt 10) t1'
-  -- putStrLn $ toSexp $ prefix'' (natOfInt 10) t1''
+  -- putStrLn $ show $ prefix'' 5 t1'
+  -- putStrLn $ show $ prefix'' 5 t1''
+  -- putStrLn $ toSexp $ prefix'' 10 t1'
+  -- putStrLn $ toSexp $ prefix'' 10 t1''
   
   -- let t2' = proj2_tree t
   -- let t2'' = proj2_tree t'
-  -- putStrLn $ show $ prefix'' (natOfInt 5) t2'
-  -- putStrLn $ show $ prefix'' (natOfInt 5) t2''
-  -- putStrLn $ toSexp $ prefix'' (natOfInt 10) t2'
-  -- putStrLn $ toSexp $ prefix'' (natOfInt 10) t2''
+  -- putStrLn $ show $ prefix'' 5 t2'
+  -- putStrLn $ show $ prefix'' 5 t2''
+  -- putStrLn $ toSexp $ prefix'' 10 t2'
+  -- putStrLn $ toSexp $ prefix'' 10 t2''
+
+  let (samples, bits') = run_sampler (n_samples t 100) bits
+  putStrLn $ show $ fromJust <$> samples
