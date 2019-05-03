@@ -1,0 +1,8 @@
+[package]
+name = "ky-backend"
+version = "0.1.0"
+authors = ["Gordon Stewart <gstew5@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+hashbrown = "0.3.0"
