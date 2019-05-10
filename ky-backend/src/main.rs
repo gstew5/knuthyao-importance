@@ -14,28 +14,28 @@ enum Tree<A> {
     Hole
 }
 
-use Tree::*;
+use self::Tree::*;
 
 type Index = u16;
 const NUM_BITS: usize = 16;
 const NUM_ENTRIES: usize = 1<<NUM_BITS;
 
-fn event_of<A: Clone>(t: &Tree<A>, i: Index) -> Option<A> {
+fn event_of<A: Clone>(root: &Tree<A>, t: &Tree<A>, i: Index) -> Option<A> {
     match t {
         Leaf(a) => Some(a.clone()),
         Node(t1, t2) =>
             if i % 2 == 0 {
-                event_of(&*t1, i>>1)
+                event_of(root, &*t1, i>>1)
             } else {
-                event_of(&*t2, i>>1)
+                event_of(root, &*t2, i>>1)
             },
-        Hole => None
+        Hole => event_of(root, root, i)
     }
 }
 
 fn materialize<A: Clone>(t: &Tree<A>, entries: &mut [Option<A>]) -> () {
     for i in 0..NUM_ENTRIES {
-        entries[i] = event_of(t, i as u16)
+        entries[i] = event_of(t, t, i as u16)
     }
 }
 
@@ -61,7 +61,8 @@ fn main() {
         }
     };
     let elapsed = now.elapsed();    
-    println!("As = {}, Bs = {}, Nones = {}", num_as, num_bs, num_nones);
+    println!("As = {}, Bs = {}, Nones = {}, As/Bs = {}",
+             num_as, num_bs, num_nones, num_as as f64/(num_as + num_bs) as f64);
     println!("time = {}s, {}ms", elapsed.as_secs(), elapsed.subsec_millis())    
 }
 
