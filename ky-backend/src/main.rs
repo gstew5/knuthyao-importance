@@ -8,6 +8,7 @@ enum Event {
     B,
 }
 
+#[derive(Debug,Clone)]
 enum Tree<A> {
     Leaf(A),
     Node(Box<Tree<A>>, Box<Tree<A>>),
@@ -20,35 +21,48 @@ type Index = u16;
 const NUM_BITS: usize = 16;
 const NUM_ENTRIES: usize = 1<<NUM_BITS;
 
-fn event_of<A: Clone>(root: &Tree<A>, t: &Tree<A>, i: Index) -> Option<A> {
-    match t {
-        Leaf(a) => Some(a.clone()),
-        Node(t1, t2) =>
-            if i % 2 == 0 {
-                event_of(root, &*t1, i>>1)
-            } else {
-                event_of(root, &*t2, i>>1)
-            },
-        Hole => event_of(root, root, i)
+fn subtree_of_aux<A: Clone>(n: usize, root: &Tree<A>, t: &Tree<A>, i: Index) -> Tree<A> {
+    if n == 0 { Hole } else {
+        match t {
+            Leaf(_) => t.clone(),
+            Node(t1, t2) =>
+                if i % 2 == 0 {
+                    subtree_of_aux(n-1, root, t1, i>>1)
+                } else {
+                    subtree_of_aux(n-1, root, t2, i>>1)
+                },
+            Hole => subtree_of_aux(n, root, root, i)
+        }
     }
 }
 
-fn event_of<A: Clone>(t_orig: &Tree<A>, t: &Tree<A>, i: Index) -> Option<A> {
+fn subtree_of<A: Clone>(t: &Tree<A>, i: Index) -> Tree<A> {
+    subtree_of_aux(NUM_BITS, t, t, i)
+}
+
+fn event_of_aux<A: Clone>(root: &Tree<A>, t: &Tree<A>) -> Option<A> {
     match t {
         Leaf(a) => Some(a.clone()),
-        Node(t1, t2) =>
-            if i % 2 == 0 {
-                event_of(t_orig, &*t1, i>>1)
+        Node(t1, t2) => {
+            let mut rng = thread_rng();
+            if rng.gen() {
+                event_of_aux(root, t1)
             } else {
-                event_of(t_orig, &*t2, i>>1)
-            },
-        Hole => event_of(t_orig, t_orig, i)
+                event_of_aux(root, t2)
+            }
+        },
+        Hole => event_of_aux(root, root)
     }
+}
+
+fn event_of<A: Clone>(t: &Tree<A>, i: Index) -> Option<A> {
+    let s = subtree_of(t, i);
+    event_of_aux(&t, &s)
 }
 
 fn materialize<A: Clone>(t: &Tree<A>, entries: &mut [Option<A>]) -> () {
     for i in 0..NUM_ENTRIES {
-        entries[i] = event_of(t, t, i as u16)
+        entries[i] = event_of(t, i as u16)
     }
 }
 
@@ -63,10 +77,11 @@ fn main() {
     let mut num_as = 0;
     let mut num_bs = 0;
     let mut num_nones = 0;
-    
+
+    const NUM_TRIALS: usize = 10_000_000;
     let now0 = Instant::now();
     for _ in 0..NUM_TRIALS {
-        match rand_event(&tree) {
+        match event_of_aux(&tree, &tree) {
             Some(Event::A) => num_as += 1,
             Some(Event::B) => num_bs += 1,
             None => num_nones += 1,
