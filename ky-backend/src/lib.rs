@@ -1,3 +1,6 @@
+extern crate sexp;
+use sexp::{Sexp,Atom};
+
 extern crate rand;
 use rand::prelude::*;
 
@@ -15,6 +18,51 @@ pub enum Tree<A> {
 }
 
 use self::Tree::*;
+
+trait FromSexp {
+    fn from_sexp(e: &sexp::Sexp) -> Option<Self> where Self: std::marker::Sized;
+}
+
+impl FromSexp for Tree<String> {
+    fn from_sexp(e: &Sexp) -> Option<Self> {
+        match e {
+            Sexp::Atom(a) => {
+                match a { 
+                    Atom::S(s) => {
+                        if s.is_empty() {
+                            Some(Hole)
+                        } else {
+                            Some(Leaf(s.clone()))
+                        }
+                    },
+                    Atom::I(_) => None,
+                    Atom::F(_) => None
+                }
+            },
+            Sexp::List(v) => {
+                if v.len() == 2 {
+                    let t1 = Self::from_sexp(&v[0])?;
+                    let t2 = Self::from_sexp(&v[1])?;
+                    Some(Node(Box::new(t1), Box::new(t2)))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+pub fn parse_str(s: &str) -> Result<Tree<String>, &'static str> {
+    match sexp::parse(s) {
+        Ok(e) => {
+            match Tree::from_sexp(&e) {
+                Some(t) => Ok(t),
+                None => Err("failure: sexp->tree")
+            }
+        },
+        Err(_) => Err("failure: string->sexp")
+    }
+}
 
 pub type Index = u8;
 pub const NUM_BITS: usize = 8;
